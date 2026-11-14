@@ -37,7 +37,7 @@ pub fn files(a: &Answers, year: i32) -> Vec<File> {
     let mut files = vec![
         File {
             path: "Cargo.toml",
-            text: render(include_str!("../templates/common/Cargo.toml")),
+            text: render(include_str!("../templates/common/Cargo.toml.tmpl")),
         },
         File {
             path: ".gitignore",
@@ -278,5 +278,29 @@ mod tests {
         assert!(cargo.contains(r#"{ git = "https://example.com/deckly", branch = "dev" }"#));
         assert!(!cargo.contains("license ="));
         assert!(cargo.contains("\n[workspace]\n"));
+    }
+
+    /// Cargo treats a folder holding a file named `Cargo.toml` as another
+    /// package: `cargo publish` leaves it out of this crate (so an installed
+    /// `deckly-cli` would not build), and a git dependency on the repository
+    /// reports the template as a broken manifest.
+    #[test]
+    fn no_template_is_named_like_a_cargo_manifest() {
+        fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if entry.file_name() == "Cargo.toml" {
+                    found.push(path.display().to_string());
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            &mut found,
+        );
+        assert_eq!(found, Vec::<String>::new());
     }
 }
