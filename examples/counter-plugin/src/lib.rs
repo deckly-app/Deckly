@@ -16,7 +16,6 @@ pub const PLUGIN_ID: &str = "com.deckly.example.counter";
 const STARTS: [u64; 3] = [0, 10, 100];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct CounterSettings {
     /// Added (or taken away) on each press.
     pub step: u32,
@@ -57,7 +56,6 @@ impl CounterSettings {
 
 /// Settings shared by every counter key, edited in the plugin's own form.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct CounterGlobals {
     /// Offered as one more "Start at" value.
     pub default_start: u64,
@@ -74,8 +72,16 @@ pub struct Counter {
     last_press: Option<Instant>,
 }
 
-impl Counter {
-    fn draw(&self, key: &Key<Self>) {
+impl Action for Counter {
+    const ID: &'static str = "count";
+    const NAME: &'static str = "Count presses";
+    const TOOLTIP: &'static str = "Counts how often the key is pressed";
+    const ICON: &'static str = "assets/counter.svg";
+    type Settings = CounterSettings;
+
+    /// The SDK asks after every event and tick, and sends the face only
+    /// when it changed.
+    fn face(&self, key: &Key<Self>) -> Option<Face> {
         let settings = key.settings();
         let step = settings.step.max(1);
         let detail = match self.last_press.map(|t| t.elapsed().as_secs()) {
@@ -84,15 +90,18 @@ impl Counter {
             Some(s) if s < 60 => format!("{s}s ago"),
             Some(s) => format!("{}m ago", s / 60),
         };
-        // The bar empties over the seconds after a press.
+        // The bar empties over the seconds after a press, in whole steps of
+        // a percent, so a face asked for twice in a row is the same face
+        // and is not sent again.
         let fade = settings.fade.max(1) as f32;
         let fresh = self
             .last_press
             .filter(|_| settings.show_age)
             .map_or(0.0, |t| 1.0 - t.elapsed().as_secs_f32() / fade);
+        let fresh = (fresh * 100.0).round() / 100.0;
         let accent =
             Color::try_from(settings.accent.clone()).unwrap_or(Color::rgb(0x4c, 0xc2, 0xff));
-        key.set_face(
+        Some(
             Face::new()
                 .label(&settings.label)
                 .value(settings.count.to_string())
@@ -100,16 +109,8 @@ impl Counter {
                 .progress(fresh)
                 .accent(accent)
                 .icon("assets/counter.svg"),
-        );
+        )
     }
-}
-
-impl Action for Counter {
-    const ID: &'static str = "com.deckly.example.counter.count";
-    const NAME: &'static str = "Count presses";
-    const TOOLTIP: &'static str = "Counts how often the key is pressed";
-    const ICON: &'static str = "assets/counter.svg";
-    type Settings = CounterSettings;
 
     fn form(form: &mut Form) {
         form.section("Counting");
@@ -163,7 +164,7 @@ impl Action for Counter {
     }
 
     fn key_appear(&mut self, key: &Key<Self>) {
-        self.draw(key);
+        // Each tick draws the face again, for the time since the last press.
         key.every(Duration::from_secs(1));
     }
 
@@ -177,23 +178,13 @@ impl Action for Counter {
             };
         });
         self.last_press = Some(Instant::now());
-        self.draw(key);
     }
 
     fn button(&mut self, key: &Key<Self>, button: &str) {
         if button == "reset" {
             key.update_settings(|s| s.count = s.start_value());
             self.last_press = None;
-            self.draw(key);
         }
-    }
-
-    fn settings_changed(&mut self, key: &Key<Self>) {
-        self.draw(key);
-    }
-
-    fn tick(&mut self, key: &Key<Self>) {
-        self.draw(key);
     }
 }
 

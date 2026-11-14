@@ -18,6 +18,7 @@ use crate::runtime::{self, Msg, Shared};
 use crate::update::Updater;
 use crate::{plugins, store};
 use deckly_plugin_host::Host;
+use deckly_plugin_host::proto::dev::Control;
 use eframe::egui;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::PathBuf;
@@ -139,10 +140,6 @@ impl Background {
             window: Arc::default(),
             main: main_thread::Waker::for_this_thread(),
         };
-        if let Some(instance) = instance {
-            let wake = wake.clone();
-            instance.listen(move || wake.send(Command::Show));
-        }
         let state: Shared = Arc::new(Mutex::new(state));
         // What the runtime reports can change the tray menu, so it reaches a
         // hidden or closed window too. Plugin images do not, and can arrive
@@ -164,6 +161,23 @@ impl Background {
         let (host, host_events) = start_host();
         if host.is_none() {
             runtime::lock(&state).notify("Plugins could not be started");
+        }
+        if let Some(instance) = instance {
+            let wake = wake.clone();
+            let host = host.clone();
+            instance.listen(
+                move || wake.send(Command::Show),
+                move |control| {
+                    let host = host.as_ref().ok_or("plugins could not be started")?;
+                    match control {
+                        Control::Reload(id) => host.reload(&id),
+                        Control::Rescan => {
+                            host.rescan();
+                            Ok("looking for plugins".into())
+                        }
+                    }
+                },
+            );
         }
         let runtime = runtime::start(state.clone(), repaint, host.clone());
         let updater = Updater::new(store::config_dir(), {
@@ -409,6 +423,10 @@ fn start_host() -> (
         wine: std::env::var_os("DECKLY_WINE").map(PathBuf::from),
         guard: std::env::current_exe().ok(),
         runtimes_dir: dir.join("runtimes"),
+        dev: Some(deckly_plugin_host::DevConfig {
+            links: dir.join(deckly_plugin_host::proto::dev::LINKS_FILE),
+            run_dir: dir.join("dev-run"),
+        }),
         app: deckly_plugin_host::AppInfo {
             language: "en".into(),
             platform_version: crate::os::system_version(),

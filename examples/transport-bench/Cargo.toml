@@ -1,7 +1,7 @@
 [package]
 name = "transport-bench"
 description = "Measures the Deckly plugin pipe transport against the Stream Deck WebSocket path"
-version = "0.1.0"
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

@@ -149,6 +149,8 @@ pub struct CatalogPlugin {
     pub official_only: bool,
     /// A Deckly plugin's form for its global settings.
     pub form: Option<Arc<Form>>,
+    /// A development plugin's linked folder (the plugin tool's build).
+    pub dev_source: Option<PathBuf>,
     /// Identifies the manifest the images were decoded from.
     source: usize,
 }
@@ -535,6 +537,7 @@ impl Worker {
                     actions: Vec::new(),
                     status: p.status.clone(),
                     dir: p.dir.clone(),
+                    dev_source: p.source.clone(),
                     official_only: false,
                     form: None,
                     source: 0,
@@ -548,6 +551,7 @@ impl Worker {
             if let Some(prev) = old.get(&p.id).filter(|o| o.source == source) {
                 let mut next = (**prev).clone();
                 next.status = p.status.clone();
+                next.dev_source.clone_from(&p.source);
                 plugins.push(Arc::new(next));
                 continue;
             }
@@ -600,6 +604,7 @@ impl Worker {
                 actions,
                 status: p.status.clone(),
                 dir: p.dir.clone(),
+                dev_source: p.source.clone(),
                 official_only: deckly_plugin_host::manifest::needs_official_app(&p.dir),
                 form: m
                     .deckly

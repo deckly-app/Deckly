@@ -40,14 +40,16 @@ impl Globals {
         self.inner.value.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// The settings as `G`. Settings that do not fit read as `Default`,
+    /// The settings as `G`, read over `G::default()` like a key's settings:
+    /// a missing field, or one that does not fit, keeps its default value,
     /// with a line on standard error.
-    pub fn get<G: DeserializeOwned + Default>(&self) -> G {
+    pub fn get<G: Serialize + DeserializeOwned + Default>(&self) -> G {
         let value = self.lock().clone();
-        serde_json::from_value(value).unwrap_or_else(|e| {
-            eprintln!("deckly-sdk: global settings do not fit their type: {e}; using defaults");
-            G::default()
-        })
+        let (settings, note) = crate::settings::read(&value);
+        if let Some(note) = note {
+            eprintln!("deckly-sdk: global settings: {note}");
+        }
+        settings
     }
 
     /// The settings as Deckly sent them.

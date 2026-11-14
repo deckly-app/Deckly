@@ -66,6 +66,7 @@ fn a_windows_program_starts_through_wine_and_is_told_it_runs_on_windows() {
                 platform_version: String::new(),
                 font: String::new(),
             },
+            dev: None,
         },
         events,
     )

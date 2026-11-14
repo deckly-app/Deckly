@@ -2,7 +2,7 @@
 
 use counter_plugin::{Counter, CounterSettings, plugin};
 use deckly_sdk::Action;
-use deckly_sdk::protocol::{FieldKind, Validate};
+use deckly_sdk::protocol::{FieldKind, PluginMessage, Validate};
 use deckly_sdk::testing::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -27,8 +27,16 @@ fn presses_count_by_the_step_and_are_saved() {
     let face = deck.face("k1", WAIT).unwrap();
     assert_eq!(face.value.as_deref(), Some("5"));
     deck.change_settings("k1", json!({"step": 1, "count": 100}));
-    let face = deck.face("k1", WAIT).unwrap();
-    assert_eq!(face.value.as_deref(), Some("100"));
+    // The bar may move between two faces; wait for the new count.
+    let face = deck
+        .wait_for(WAIT, |m| match &m.message {
+            PluginMessage::SetFace { face: Some(f), .. } if f.value.as_deref() == Some("100") => {
+                Some(f.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(face.detail.as_deref(), Some("0s ago"));
     deck.finish().unwrap();
 }
 
@@ -49,9 +57,11 @@ fn the_timer_redraws_after_a_press() {
 #[test]
 fn bad_settings_fall_back_to_defaults() {
     let mut deck = Harness::start(plugin());
-    deck.appear("k1", Counter::ID, json!({"step": "lots"}));
+    // Only the field that does not fit falls back; the others are kept.
+    deck.appear("k1", Counter::ID, json!({"step": "lots", "label": "Hits"}));
     let face = deck.face("k1", WAIT).unwrap();
     assert_eq!(face.detail.as_deref(), Some("step 1"));
+    assert_eq!(face.label.as_deref(), Some("Hits"));
     deck.finish().unwrap();
 }
 

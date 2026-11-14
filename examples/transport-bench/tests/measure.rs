@@ -114,6 +114,7 @@ fn start(kind: Kind) -> Result<(Host, Receiver<HostEvent>, PathBuf), String> {
                 platform_version: String::new(),
                 font: String::new(),
             },
+            dev: None,
         },
         events,
     )

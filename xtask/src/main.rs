@@ -4,7 +4,9 @@
 //! - `cargo dev dist`: build the release archive for one target.
 //! - `cargo dev release-files`: write the Homebrew formula and AUR package
 //!   for a release from its checksums.
+//! - `cargo dev book`: build the plugin SDK docs site into `target/book`.
 
+mod book;
 mod dist;
 mod licenses;
 mod release_files;
@@ -18,6 +20,7 @@ fn main() -> ExitCode {
     let result = match args.peek().and_then(|a| a.to_str()) {
         Some("dist") => dist::run(args.skip(1)).map(|()| true),
         Some("release-files") => release_files::run(args.skip(1)).map(|()| true),
+        Some("book") => book::run(args.skip(1)).map(|()| true),
         _ => run(args),
     };
     match result {
@@ -68,7 +71,10 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {
              Builds the release archive for one target (default: this computer).\n\
              \n\
              cargo dev release-files --tag <vX.Y.Z> --checksums <SHA256SUMS> [--out <dir>]\n\
-             Writes the Homebrew formula and the AUR package for a release."
+             Writes the Homebrew formula and the AUR package for a release.\n\
+             \n\
+             cargo dev book\n\
+             Builds the plugin SDK docs (book, API reference, llms.txt) into target/book."
         );
         return Ok(true);
     }

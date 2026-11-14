@@ -52,16 +52,17 @@ pub(crate) trait Slot: Send {
 type ChoicesFn = fn(&str, &Value, &Globals) -> std::result::Result<Vec<Choice>, String>;
 
 /// What the SDK knows of one action type.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Maker {
-    id: &'static str,
+    /// The full action id.
+    id: String,
     make: fn(KeyInfo, &Shared, bool) -> Box<dyn Slot>,
     choices: ChoicesFn,
 }
 
-pub(crate) fn maker<A: Action>() -> Maker {
+pub(crate) fn maker<A: Action>(id: String) -> Maker {
     Maker {
-        id: A::ID,
+        id,
         make: make::<A>,
         choices: choices_of::<A>,
     }
@@ -72,7 +73,7 @@ fn choices_of<A: Action>(
     settings: &Value,
     globals: &Globals,
 ) -> std::result::Result<Vec<Choice>, String> {
-    let settings = serde_json::from_value(settings.clone()).unwrap_or_default();
+    let (settings, _) = crate::settings::read(settings);
     A::choices(field, &settings, globals)
 }
 
@@ -96,17 +97,14 @@ fn make<A: Action>(info: KeyInfo, shared: &Shared, shown: bool) -> Box<dyn Slot>
 }
 
 fn read_settings<A: Action>(info: &KeyInfo) -> A::Settings {
-    match serde_json::from_value(info.settings.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "deckly-sdk: settings of key {} do not fit {}: {e}; using defaults",
-                info.context,
-                A::ID
-            );
-            A::Settings::default()
-        }
+    let (settings, note) = crate::settings::read(&info.settings);
+    if let Some(note) = note {
+        eprintln!(
+            "deckly-sdk: settings of key {} ({}): {note}",
+            info.context, info.action
+        );
     }
+    settings
 }
 
 struct Instance<A: Action> {
@@ -127,11 +125,20 @@ impl<A: Action> Instance<A> {
         let settings = std::mem::take(&mut mine.settings);
         *mine = KeyInfo { settings, ..info };
     }
+
+    /// Shows what [`Action::face`] draws now; the key skips a face equal
+    /// to the one shown.
+    fn draw(&self) {
+        if let Some(face) = self.action.face(&self.key) {
+            self.key.set_face(face);
+        }
+    }
 }
 
 impl<A: Action> Slot for Instance<A> {
     fn appear(&mut self) {
         self.action.key_appear(&self.key);
+        self.draw();
     }
 
     fn disappear(&mut self) {
@@ -144,11 +151,13 @@ impl<A: Action> Slot for Instance<A> {
     fn down(&mut self, info: KeyInfo) {
         self.update(info);
         self.action.key_down(&self.key);
+        self.draw();
     }
 
     fn up(&mut self, info: KeyInfo) {
         self.update(info);
         self.action.key_up(&self.key);
+        self.draw();
     }
 
     fn settings(&mut self, info: KeyInfo) {
@@ -161,11 +170,13 @@ impl<A: Action> Slot for Instance<A> {
             .unwrap_or_else(|p| p.into_inner()) = settings;
         self.update(info);
         self.action.settings_changed(&self.key);
+        self.draw();
     }
 
     fn tick(&mut self, generation: u64) {
         if self.key.inner.timer.load(Ordering::Relaxed) == generation && self.key.is_visible() {
             self.action.tick(&self.key);
+            self.draw();
         }
     }
 
@@ -179,10 +190,12 @@ impl<A: Action> Slot for Instance<A> {
             .unwrap_or_else(|p| p.into_inner()) = read_settings::<A>(&info);
         self.update(info);
         self.action.button(&self.key, field);
+        self.draw();
     }
 
     fn globals_changed(&mut self) {
         self.action.global_settings_changed(&self.key);
+        self.draw();
     }
 
     fn discard(&mut self) {

@@ -326,7 +326,7 @@ outside the editor, its old history is discarded instead of overwriting it.
 ## Plugins
 
 Deckly runs plugins written for the Stream Deck SDK unchanged, each as its
-own process. Install one from the Plugins tab ("Install…" for a
+own process. Install one from the Plugins tab ("Add File…" for a
 `.streamDeckPlugin` file or a `.zip` download that holds one or a
 `<plugin id>.sdPlugin` folder, "Add Folder…" for a `.sdPlugin` folder or
 a folder holding one) or drop the file or folder on the window. Plugin actions then appear in the
@@ -371,6 +371,10 @@ Plugins live in Deckly's config folder under `plugins`, their logs under
 `logs/plugins`. For plugin authors, `DECKLY_PLUGIN_DEBUG=1` writes every
 message to and from a plugin into its log, shows HTML plugin pages, and
 enables the web view's developer tools.
+
+To write a plugin of your own in Rust, see the
+[Deckly Plugin SDK docs](https://deckly-app.github.io/Deckly/)
+(sources in [`docs/sdk`](docs/sdk/README.md)).
 
 ## Standby screen
 

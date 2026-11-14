@@ -5,12 +5,14 @@ members = [
     "xtask",
     "crates/deckly",
     "crates/deckly-core",
+    "crates/deckly-cli",
     "crates/deckly-device",
     "crates/deckly-plugin-host",
     "crates/deckly-plugin-protocol",
     "crates/deckly-sdk",
     "crates/deckly-web",
     "examples/counter-plugin",
+    "examples/hello-deckly",
     "examples/transport-bench",
 ]
 
@@ -19,13 +21,14 @@ version = "0.0.4"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"
+repository = "https://github.com/deckly-app/Deckly"
 
 [workspace.dependencies]
 deckly-core = { path = "crates/deckly-core" }
 deckly-device = { path = "crates/deckly-device" }
 deckly-plugin-host = { path = "crates/deckly-plugin-host" }
-deckly-plugin-protocol = { path = "crates/deckly-plugin-protocol" }
-deckly-sdk = { path = "crates/deckly-sdk" }
+deckly-plugin-protocol = { path = "crates/deckly-plugin-protocol", version = "0.0.1" }
+deckly-sdk = { path = "crates/deckly-sdk", version = "0.0.1" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 

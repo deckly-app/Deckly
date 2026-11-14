@@ -4,7 +4,7 @@
 //! folders are never touched.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use deckly_plugin_host::{AppInfo, Command, Config, Host, HostEvent, Instance, Status};
+use deckly_plugin_host::{AppInfo, Command, Config, DevConfig, Host, HostEvent, Instance, Status};
 use deckly_sdk::protocol::MANIFEST_FILE;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,12 @@ const ACTION: &str = "com.deckly.example.counter.count";
 
 /// A plugins folder holding the counter plugin as Deckly installs it.
 fn install(root: &Path) -> PathBuf {
-    let dir = root.join("plugins").join(PLUGIN);
+    assemble(&root.join("plugins").join(PLUGIN))
+}
+
+/// The counter plugin's folder, as the plugin tool builds it.
+fn assemble(dir: &Path) -> PathBuf {
+    let dir = dir.to_owned();
     std::fs::create_dir_all(dir.join("assets")).unwrap();
     let program = PathBuf::from(env!("CARGO_BIN_EXE_counter-plugin"));
     let name = program.file_name().unwrap();
@@ -38,6 +43,10 @@ fn install(root: &Path) -> PathBuf {
 }
 
 fn start(root: &Path) -> (Host, Receiver<HostEvent>) {
+    start_with(root, None)
+}
+
+fn start_with(root: &Path, dev: Option<DevConfig>) -> (Host, Receiver<HostEvent>) {
     let (events, rx) = channel();
     let host = Host::start(
         Config {
@@ -53,6 +62,7 @@ fn start(root: &Path) -> (Host, Receiver<HostEvent>) {
                 platform_version: String::new(),
                 font: String::new(),
             },
+            dev,
         },
         events,
     )
@@ -271,6 +281,61 @@ fn forms_reach_the_plugin_through_the_real_host() {
     assert_eq!(settings["count"], 10);
     // A plugin that is not running is not asked.
     assert!(!host.ask_choices("com.example.none", 43, "start", None));
+    host.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_linked_plugin_runs_from_a_copy_and_reloads_from_a_fresh_one() {
+    let root = temp_root("counter-dev");
+    // Installed, and linked from a build folder: the link wins.
+    install(&root);
+    let source = assemble(&root.join("project/target/deckly").join(PLUGIN));
+    let mut links = deckly_sdk::protocol::dev::Links::default();
+    links
+        .plugins
+        .insert(PLUGIN.into(), source.to_string_lossy().into_owned());
+    links.plugins.insert(
+        "com.example.gone".into(),
+        root.join("nowhere").to_string_lossy().into_owned(),
+    );
+    let dev = DevConfig {
+        links: root.join("dev-plugins.json"),
+        run_dir: root.join("dev-run"),
+    };
+    std::fs::write(&dev.links, links.to_json()).unwrap();
+    let (host, rx) = start_with(&root, Some(dev.clone()));
+    wait_for(&rx, |e| matches!(e, HostEvent::Started(_)).then_some(()));
+    let plugin = host.plugins().into_iter().find(|p| p.id == PLUGIN).unwrap();
+    assert_eq!(plugin.source.as_deref(), Some(source.as_path()));
+    assert_eq!(plugin.dir, dev.run_dir.join(PLUGIN));
+    assert_eq!(plugin.status, Status::Running);
+    // A link to a missing folder is a failed plugin, not a crash.
+    let gone = host
+        .plugins()
+        .into_iter()
+        .find(|p| p.id == "com.example.gone")
+        .unwrap();
+    assert!(matches!(gone.status, Status::Failed(ref e) if e.contains("missing")));
+
+    // A new build: reloading copies it again and restarts the plugin.
+    std::fs::write(source.join("assets/new.txt"), "v2").unwrap();
+    assert_eq!(host.reload(PLUGIN).as_deref(), Ok("restarted"));
+    assert!(dev.run_dir.join(PLUGIN).join("assets/new.txt").is_file());
+    wait_for(&rx, |e| matches!(e, HostEvent::Started(_)).then_some(()));
+    assert!(host.reload("com.example.none").is_err());
+
+    // Unlinked, the installed copy runs again and the run copy is gone.
+    host.unlink(PLUGIN).unwrap();
+    wait_for(&rx, |e| matches!(e, HostEvent::Started(_)).then_some(()));
+    let plugin = host.plugins().into_iter().find(|p| p.id == PLUGIN).unwrap();
+    assert_eq!(plugin.source, None);
+    assert_eq!(plugin.dir, root.join("plugins").join(PLUGIN));
+    assert!(!dev.run_dir.join(PLUGIN).exists());
+    let left = std::fs::read(&dev.links).unwrap();
+    let left = deckly_sdk::protocol::dev::Links::parse(&left).unwrap();
+    assert!(!left.plugins.contains_key(PLUGIN));
+    assert!(host.unlink(PLUGIN).is_err());
     host.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }

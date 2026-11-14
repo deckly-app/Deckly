@@ -69,6 +69,19 @@ pub struct Config {
     /// directly and may outlive a host that crashed.
     pub guard: Option<PathBuf>,
     pub app: AppInfo,
+    /// Development plugins: folders linked by the plugin tool. `None` runs
+    /// none.
+    pub dev: Option<DevConfig>,
+}
+
+/// Where the plugin tool's links are, and where linked plugins run from.
+#[derive(Clone, Debug)]
+pub struct DevConfig {
+    /// The link file (`dev-plugins.json`, see [`proto::dev::Links`]).
+    pub links: PathBuf,
+    /// Each linked plugin runs from a fresh copy in `<run_dir>/<id>`, so a
+    /// build can replace the program while the old one still runs.
+    pub run_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +104,9 @@ pub struct Plugin {
     /// `None` when the manifest cannot be read; the status says why.
     pub manifest: Option<Arc<Manifest>>,
     pub status: Status,
+    /// A development plugin's linked folder; `dir` is then the copy it runs
+    /// from.
+    pub source: Option<PathBuf>,
 }
 
 impl Plugin {
@@ -147,6 +163,8 @@ enum Ctl {
     Server(ServerEvent),
     Rescan,
     Restart(String),
+    Reload(String, Sender<Result<String, String>>),
+    Unlink(String, Sender<Result<(), String>>),
     Install(Box<install::Staged>, Sender<Result<String, String>>),
     Remove(String, Sender<Result<(), String>>),
     OpenInspector(Instance),
@@ -430,9 +448,27 @@ impl Host {
         let _ = self.ctl.send(Ctl::Restart(plugin.to_owned()));
     }
 
-    /// Looks for added or removed plugin folders.
+    /// Looks for added or removed plugin folders, and linked ones.
     pub fn rescan(&self) {
         let _ = self.ctl.send(Ctl::Rescan);
+    }
+
+    /// Looks for plugins again, then restarts `plugin`: from a fresh copy
+    /// of its folder for a development plugin. Blocks until it was started
+    /// (not until it runs); the text says what happened.
+    pub fn reload(&self, plugin: &str) -> Result<String, String> {
+        let (tx, rx) = channel();
+        let _ = self.ctl.send(Ctl::Reload(plugin.to_owned(), tx));
+        rx.recv()
+            .unwrap_or_else(|_| Err("the plugin host stopped".into()))
+    }
+
+    /// Stops a development plugin and removes its link. Blocks until done.
+    pub fn unlink(&self, plugin: &str) -> Result<(), String> {
+        let (tx, rx) = channel();
+        let _ = self.ctl.send(Ctl::Unlink(plugin.to_owned(), tx));
+        rx.recv()
+            .unwrap_or_else(|_| Err("the plugin host stopped".into()))
     }
 
     /// Installs a `.streamDeckPlugin` archive or a `.sdPlugin` folder,
@@ -514,12 +550,12 @@ impl Supervisor {
                 None => self.timers(),
                 Some(Ctl::Server(e)) => self.server_event(e),
                 Some(Ctl::Rescan) => self.rescan(),
-                Some(Ctl::Restart(id)) => {
-                    self.stop(&id);
-                    if let Some(slot) = self.slots.get_mut(&id) {
-                        slot.crashes.clear();
-                    }
-                    self.launch(&id);
+                Some(Ctl::Restart(id)) => self.restart(&id),
+                Some(Ctl::Reload(id, reply)) => {
+                    let _ = reply.send(self.reload(&id));
+                }
+                Some(Ctl::Unlink(id, reply)) => {
+                    let _ = reply.send(self.unlink(&id));
                 }
                 Some(Ctl::Install(staged, reply)) => {
                     let id = staged.manifest.uuid.clone();
@@ -666,7 +702,25 @@ impl Supervisor {
                     dir,
                     manifest,
                     status,
+                    source: None,
                 });
+            }
+        }
+        if let Some(dev) = self.config.dev.clone() {
+            let links = read_links(&dev.links);
+            for (id, folder) in &links.plugins {
+                // A link wins over an installed copy of the same plugin.
+                found.retain(|p| &p.id != id);
+                found.push(self.dev_plugin(id, Path::new(folder), &dev));
+            }
+            // Copies of plugins no longer linked.
+            if let Ok(entries) = std::fs::read_dir(&dev.run_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    if !links.plugins.contains_key(&*name.to_string_lossy()) {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                }
             }
         }
         found.sort_by_key(|p| {
@@ -680,7 +734,17 @@ impl Supervisor {
             .filter(|id| !found.iter().any(|p| &p.id == *id))
             .cloned()
             .collect();
-        for id in gone {
+        // A plugin that now runs from another folder (linked, or unlinked
+        // back to its installed copy) starts over.
+        let moved: Vec<String> = {
+            let s = lock(&self.shared);
+            found
+                .iter()
+                .filter(|p| s.plugins.iter().any(|o| o.id == p.id && o.dir != p.dir))
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        for id in gone.into_iter().chain(moved) {
             self.stop(&id);
             self.slots.remove(&id);
         }
@@ -705,6 +769,121 @@ impl Supervisor {
             self.launch(&id);
         }
         self.emit(HostEvent::Changed);
+    }
+
+    /// A linked plugin: copied afresh unless it already runs from this
+    /// folder.
+    fn dev_plugin(&mut self, id: &str, source: &Path, dev: &DevConfig) -> Plugin {
+        let run = dev.run_dir.join(id);
+        let mut plugin = Plugin {
+            id: id.to_owned(),
+            dir: run.clone(),
+            manifest: None,
+            status: Status::Starting,
+            source: Some(source.to_owned()),
+        };
+        let same = lock(&self.shared)
+            .plugins
+            .iter()
+            .any(|p| p.id == id && p.source.as_deref() == Some(source));
+        let running = self.slots.contains_key(id);
+        if !(same && running) {
+            // Its program may run from the copy about to be replaced.
+            if running {
+                self.stop(id);
+                self.slots.remove(id);
+            }
+            if let Err(e) = refresh_copy(source, &run) {
+                plugin.status = Status::Failed(e);
+                return plugin;
+            }
+        }
+        match pipe::load(&run) {
+            Ok(m) if m.uuid == id => plugin.manifest = Some(Arc::new(m)),
+            Ok(m) => {
+                plugin.status = Status::Failed(format!(
+                    "the linked folder holds plugin {}, not {id}; link it again",
+                    m.uuid
+                ));
+            }
+            Err(e) => plugin.status = Status::Failed(e),
+        }
+        plugin
+    }
+
+    /// Stops a plugin and starts it again; a development plugin from a
+    /// fresh copy of its folder.
+    fn restart(&mut self, id: &str) {
+        self.stop(id);
+        if let Some(slot) = self.slots.get_mut(id) {
+            slot.crashes.clear();
+        }
+        let dev = self.config.dev.clone();
+        let source = lock(&self.shared)
+            .plugins
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.source.clone());
+        if let (Some(dev), Some(source)) = (dev, source) {
+            // Not running now, so this copies afresh.
+            self.slots.remove(id);
+            let fresh = self.dev_plugin(id, &source, &dev);
+            let failed = fresh.manifest.is_none();
+            let mut s = lock(&self.shared);
+            if let Some(p) = s.plugins.iter_mut().find(|p| p.id == id) {
+                *p = fresh;
+            }
+            drop(s);
+            if failed {
+                self.emit(HostEvent::Changed);
+                return;
+            }
+        }
+        self.launch(id);
+    }
+
+    fn reload(&mut self, id: &str) -> Result<String, String> {
+        let existed = self.slots.contains_key(id);
+        self.rescan();
+        let status = |s: &Self| {
+            lock(&s.shared)
+                .plugins
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.status.clone())
+        };
+        let Some(before) = status(self) else {
+            return Err(format!(
+                "Deckly has no plugin {id}; link or install it first"
+            ));
+        };
+        let started = if existed && !matches!(before, Status::Failed(_)) {
+            self.restart(id);
+            "restarted"
+        } else {
+            "started"
+        };
+        match status(self) {
+            Some(Status::Failed(e)) => Err(e),
+            _ => Ok(started.to_owned()),
+        }
+    }
+
+    fn unlink(&mut self, id: &str) -> Result<(), String> {
+        let dev = self
+            .config
+            .dev
+            .clone()
+            .ok_or("this Deckly runs no development plugins")?;
+        let mut links = read_links(&dev.links);
+        if links.plugins.remove(id).is_none() {
+            return Err(format!("{id} is not linked"));
+        }
+        write_links(&dev.links, &links)?;
+        self.stop(id);
+        self.slots.remove(id);
+        self.rescan();
+        Ok(())
     }
 
     fn launch(&mut self, id: &str) {
@@ -1410,6 +1589,58 @@ fn make_executable(program: &Path) {
     }
     #[cfg(not(unix))]
     let _ = program;
+}
+
+/// The link file; missing or damaged reads as no links (a damaged file is
+/// noted on standard error, and the tool writes it whole again).
+fn read_links(path: &Path) -> proto::dev::Links {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return proto::dev::Links::default();
+    };
+    if meta.len() > proto::dev::MAX_LINKS_BYTES as u64 {
+        eprintln!("deckly: {} is too large; no plugins linked", path.display());
+        return proto::dev::Links::default();
+    }
+    match std::fs::read(path).map_err(|e| e.to_string()) {
+        Ok(bytes) => proto::dev::Links::parse(&bytes).unwrap_or_else(|e| {
+            eprintln!("deckly: {e}");
+            proto::dev::Links::default()
+        }),
+        Err(e) => {
+            eprintln!("deckly: cannot read {}: {e}", path.display());
+            proto::dev::Links::default()
+        }
+    }
+}
+
+/// Writes the link file through a temporary name, so a reader never sees
+/// half of it.
+fn write_links(path: &Path, links: &proto::dev::Links) -> Result<(), String> {
+    let temp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::write(&temp, links.to_json())
+        .and_then(|()| std::fs::rename(&temp, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            format!("cannot write {}: {e}", path.display())
+        })
+}
+
+/// Copies a linked folder to where it runs from.
+fn refresh_copy(source: &Path, run: &Path) -> Result<(), String> {
+    if !source.is_dir() {
+        return Err(format!(
+            "the linked folder {} is missing; build the plugin again, or unlink it",
+            source.display()
+        ));
+    }
+    if !pipe::is_plugin_dir(source) {
+        return Err(format!(
+            "the linked folder {} holds no {}; build the plugin, or unlink it",
+            source.display(),
+            proto::MANIFEST_FILE
+        ));
+    }
+    install::copy_fresh(source, run).map_err(|e| format!("cannot copy the linked folder: {e}"))
 }
 
 /// Adds a line of Deckly's own to a plugin's log.
