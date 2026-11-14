@@ -6,6 +6,73 @@ itself is in [plugin-sdk.md](plugin-sdk.md) and the author's book in
 `docs/sdk` (branch `docs/sdk-book`). Items that need the owner are marked
 **Decision**.
 
+## Install once, create anywhere
+
+The owner's main requirement: install the tool once, then run `create` in any
+folder, on Windows, Linux and macOS, like `npm install -g` and `streamdeck
+create`. Elgato's tool fails on Linux in `create` because it reads a Windows
+path; ours takes every path from the rules below and never from a constant.
+
+### The command name
+
+The app's binary is `deckly`, so there are two ways to get `... create`.
+**Decision for the owner.**
+
+| | A. The app does it: `deckly create` | B. A separate program: `deckly-cli create` (recommended) |
+| --- | --- | --- |
+| Install | Nothing extra for anyone who has Deckly | Shipped next to the app (below), or `cargo install` |
+| Windows console | The release app is built as a windows-subsystem program (`crates/deckly/src/main.rs`, line 4), so a terminal gets no output from it. Fixing it means attaching a console with OS calls (FFI) | A normal console program; prompts and logs just work |
+| `cargo install` | Would compile the whole egui/wgpu app (and on Linux need its system libraries) to get a command-line tool | Small crate (about 15 to 20 crates plus ours), no GUI libraries |
+| Weight at start | The tool dispatches before the GUI starts, so little; but the file is the whole app | Small |
+| Version match | Always matches the installed app | Matches if shipped together; a separate `cargo install` can drift, so the tool prints its own and the SDK version and warns when Deckly is older |
+| Name | The best | Longer; `cargo deckly ...` works too, because the crate builds a second binary named `cargo-deckly` |
+
+If B is chosen, the app can later forward `deckly create` to `deckly-cli`
+when started from a console.
+
+### The one install command
+
+| Way | Command | For whom |
+| --- | --- | --- |
+| Deckly's installers (recommended for a newcomer) | The existing one-liners, `curl -fsSL .../install.sh \| sh` (Linux, macOS) and `irm .../install.ps1 \| iex` (Windows), plus Homebrew and the AUR package. The release archives and installers also carry `deckly-cli` | Anyone who installs Deckly (they must, to see their plugin) |
+| `cargo install` (the same line on all three systems) | `cargo install --git https://github.com/deckly-app/Deckly deckly-cli` now; `cargo install deckly-cli` once the crates are published; `cargo binstall deckly-cli` for a prebuilt file | Rust authors, CI, a computer without a Stream Deck |
+
+What each existing channel has to change (`docs/releasing.md`): the archives
+add `deckly-cli`; `install.sh` and the Homebrew formula link it into the same
+`bin` folder as `deckly`; the AUR `PKGBUILD` links it into `/usr/bin`; the
+Windows setup program adds its folder to the user's PATH (it has no PATH entry
+today, so a newly opened terminal would not find `deckly-cli`, and the
+installer's own tests must check it). Nothing is signed today (the docs
+say so), and the same warnings apply to the tool.
+
+A newcomer without Rust needs two things either way: Deckly, and Rust from
+rustup.rs, since a plugin is a Rust program. `deckly-cli new` checks for
+`cargo` first and, when it is missing, still writes the project and says what
+to install. So the steps are: install Deckly (one line), install Rust (one
+line from rustup.rs), then `deckly-cli new` in any folder. A Rust author who
+has Rust installs only the tool with `cargo install`. We recommend the
+installers because every plugin author already needs Deckly itself.
+
+### Where it finds Deckly's folders
+
+The same rule as `config_dir()` in `crates/deckly/src/store.rs`, copied into
+the tool (the tool cannot depend on the app) and tested against the table in
+`docs/sdk/reference/folders.md`:
+
+1. `DECKLY_CONFIG_DIR`, when set and not empty, is the folder.
+2. Windows: `%APPDATA%\Deckly`.
+3. macOS: `$HOME/Library/Application Support/Deckly`.
+4. Linux and others: `$XDG_CONFIG_HOME/deckly`, else `$HOME/.config/deckly`.
+
+Inside it: `plugins/` (installed plugins), `logs/plugins/<id>.log`, and the
+files the tool adds (`dev-plugins.json`, section 4). If the variables that the
+rule needs are missing, the tool says which one and accepts `--config-dir`;
+it never falls back to a fixed path. A folder that does not exist yet is not an
+error: `new` does not touch it at all, and `link` creates it (the app does the
+same at start). To know whether Deckly is running the tool tries the same lock
+file the app holds, `instance.lock` (the app's one-instance check), without
+starting anything.
+
 ## 1. What makes the official flow pleasant
 
 Three things, and nothing else dominates:
@@ -27,23 +94,12 @@ folder is never an error.
 
 ## 2. The tool
 
-One crate, `deckly-cli`, installed as a cargo subcommand:
-
-```sh
-cargo install deckly-cli      # gives: cargo deckly ...
-cargo deckly new
-```
-
-(Before the crates are published: `cargo install --git
-https://github.com/deckly-app/Deckly deckly-cli`. Prebuilt binaries on the
-GitHub release and `cargo binstall` are a cheap addition.)
-
-Why a cargo subcommand: plugin authors have Rust and cargo by definition, so
-there is nothing else to install, no Node-style global package, and no clash
-with the app's `deckly` binary. **Decision:** the name. AGENTS.md reserves
-`deckly-cli` for "headless control and inspection"; this proposal gives the
-crate the plugin tooling and leaves headless control for later as extra
-subcommands of the same tool (or a second crate then).
+One crate, `deckly-cli`, with the binary `deckly-cli` (and a second name for
+the same program, `cargo-deckly`, so `cargo deckly new` works too). How it is
+installed and why it is a separate program from the app: see "Install once,
+create anywhere" above. AGENTS.md reserves `deckly-cli` for "headless control
+and inspection"; this proposal gives the crate the plugin tooling and leaves
+headless control for later as extra subcommands of the same tool.
 
 | Command | Does |
 | --- | --- |
@@ -58,7 +114,7 @@ subcommands of the same tool (or a second crate then).
 All commands take the plugin from the current directory (any folder inside it)
 and print plain lines that work in a non-interactive terminal.
 
-## 3. `cargo deckly new`
+## 3. `deckly-cli new`
 
 ### Questions
 
@@ -94,7 +150,7 @@ Rules from the observation:
 Steps printed one per line with a mark and a time: create the files, `git
 init` and the first commit, `cargo build` (the first build downloads and
 compiles dependencies; the line says so), link into Deckly. Then the next
-steps in three lines: `cd <folder>`, `cargo deckly dev`, and "in Deckly:
+steps in three lines: `cd <folder>`, `deckly-cli dev`, and "in Deckly:
 Plugins tab, drag *Name → Counter* onto a key". If Deckly is not installed or
 not running the link still succeeds; the message says the plugin appears the
 next time Deckly starts.
@@ -148,18 +204,18 @@ Proposal, all in the app and host, none in the tool except writing files:
    can then overwrite the program while the old one still runs. This removes
    the "Text file busy" problem the book describes for Linux and the locked
    `.exe` on Windows, so no platform needs a special rule.
-4. **Trigger.** While at least one link exists, the app watches the link file
-   and each linked folder's `deckly-plugin.json` and program (debounced about
-   300 ms) and calls `Host::restart` (or `rescan` when the manifest changed).
-   With no links nothing is watched, so idle cost for normal users stays zero.
+4. **Trigger.** After `build` the tool tells the running Deckly to restart
+   the plugin, over a channel the app already has (see the decision below).
    `build` writes the program first and the manifest last, so a restart never
-   sees a new manifest with an old program.
+   sees a new manifest with an old program. If Deckly is not running the tool
+   says so; the link file is read when Deckly starts.
 5. **Plugins tab.** A development plugin shows a small "development" mark and
    its source folder, and "Unlink" instead of "Uninstall". **Restart** and
    **Open Log** work as now.
 
 `dev` itself is then plain: build, assemble, link; watch `src/`, `assets/`,
-`Cargo.toml` (debounced); on a change run `build` again; print cargo's errors
+`Cargo.toml` (debounced; this is the tool's own watcher, section 5); on a change
+run `build` again, then ask Deckly to restart the plugin; print cargo's errors
 and keep the old plugin running when the build fails; print new lines of the
 plugin's log file as they appear (Deckly already writes `logs/plugins/<id>.log`
 with standard error and its own start/stop/protocol notes). Ctrl+C stops the
@@ -171,17 +227,27 @@ a rebuild after changing one line took 0.1 s. Windows and macOS were not
 measured. Compile time is the one place Rust cannot match a JavaScript
 bundler; `dev` uses debug builds by default and `--release` is a flag.
 
-**Decision:** the trigger. Alternatives:
+**Decision:** how the tool reaches the running Deckly.
 
-- A local control socket in the app (the tool says "restart X" like the
-  official `restart` command). Needs a Unix socket on Linux/macOS and a named
-  pipe on Windows (a crate or FFI), a port or path to find, and a place to
-  secure it; and it works only while the app is running. Not recommended.
-- Doing without a watcher: the tool copies into the plugins folder and the
-  author presses **Restart**. This is today's flow with less typing; it is a
-  fallback, not the goal.
-
-The watcher means one new dependency in the app, `notify` (section 5).
+- **(a) A message over the port the app already listens on (recommended).**
+  `crates/deckly/src/os/instance.rs` keeps `instance.lock` (a lock held while
+  Deckly runs) and `instance.port` (a localhost TCP port) in the config
+  folder; a second start connects to the port, sending nothing, and the first
+  Deckly shows its window. Extend it: after connecting, the tool may send one
+  line, `restart <id>` or `rescan`, with a token that the app writes at start
+  to a private file next to the port (mode 0600 on Unix, the user's own
+  folder on Windows). A connection with no data still means "show window", so
+  old and new copies keep working together. The tool learns "restarted" or
+  "not running" (it can also test the lock). No new dependency in the app, the
+  same on all three systems, exact instead of guessing from file events.
+  Cost: a small message format, and care with the token, because restarting
+  plugins is more than showing a window.
+- **(b) A file watcher in the app** (`notify`), restarting when a linked
+  folder's program or manifest changes. No message format and no token, but a
+  dependency in the app, a debounce rule, and no answer back to the tool.
+- Not recommended: a Unix socket plus a Windows named pipe (a crate or FFI,
+  when a TCP port already exists), or no trigger at all (the author presses
+  **Restart**, which is today's flow with less typing).
 
 ## 5. Dependencies and AGENTS.md
 
@@ -194,7 +260,7 @@ normal` on the three targets (distinct crates, not counting ours):
 | Prompts for the wizard | `dialoguer`, default features off | 5 (Linux, macOS) to 8 (Windows): `console`, `libc`, `shell-words`, `unicode-width`, plus Windows bindings | Input, Select, Confirm with validators. Recommended. |
 | Same, nicer | `inquire` | 26 to 32 | Better validation display and autocomplete, bigger. |
 | Full-screen TUI | `ratatui` | 62 to 69 | Not needed: the official wizard is prompts, not a screen. Not recommended. |
-| File watching (`dev`, and the app's trigger) | `notify` | 9 to 10 | inotify, FSEvents and ReadDirectoryChangesW behind one API; pure Rust over OS bindings, which is the desktop-integration case AGENTS.md allows. |
+| File watching in `dev` (the tool only) | `notify` | 9 to 10 | inotify, FSEvents and ReadDirectoryChangesW behind one API; Rust over OS bindings. Without it `dev` could rebuild on a key press instead. |
 | Arguments | `lexopt` (or by hand) | 1 | `clap` is bigger; seven commands do not need it. |
 | `.decklyPlugin` zip | `zip` | 0 new | Already in the tree through the host. |
 | JSON, versions | `serde`, `serde_json`, `semver` | 0 new | Already in the workspace. |
@@ -202,19 +268,16 @@ normal` on the three targets (distinct crates, not counting ours):
 
 The tool never links the SDK, the host or the app. `git` is run as a command,
 not through a library (no `libgit2`). Total for the tool: about 15 to 20 new
-crates, none that is not Rust; the app gains only `notify`. A "TUI" in the
-sense of one screen is not worth 60 crates; if the owner wants more than
+crates, all Rust; with decision (a) above the app gains none (with (b) it
+gains `notify`). A "TUI" in the sense of one screen is not worth 60 crates; if the owner wants more than
 prompts, that is a **Decision**.
 
 Layering for AGENTS.md section 3: `deckly-cli` is a tool beside L2; it depends
 on `deckly-plugin-protocol` (L1) only. Add the row when the work starts.
 
-Where Deckly keeps its folders (`%APPDATA%\Deckly`, `~/Library/Application
-Support/Deckly`, `$XDG_CONFIG_HOME/deckly`, `DECKLY_CONFIG_DIR`) the tool
-computes itself, with the same rules and a test against the table in
-`docs/sdk/reference/folders.md`, so the tool and the app cannot drift apart
-unnoticed. Program names use `EXE_SUFFIX`, the executable bit is set on Unix only,
-the target is read from `rustc -vV`.
+Where Deckly keeps its folders is in "Install once, create anywhere" above.
+Program names use `EXE_SUFFIX`, the executable bit is set on Unix only, the
+target is read from `rustc -vV`.
 
 ## 6. `validate` and `pack`
 
@@ -300,32 +363,37 @@ estimate, not measured).
 
 ## 9. Decisions for the owner
 
-1. Tool name and shape: `cargo deckly` from crate `deckly-cli` (recommended),
-   or a standalone binary; and what AGENTS.md's planned `deckly-cli` row means.
-2. Publish `deckly-sdk` and `deckly-plugin-protocol` to crates.io (needed for
-   `cargo install` of templates that just work); until then a git dependency.
-3. Reload trigger: file watcher in the app (recommended) or a control socket;
-   and the run-from-a-copy rule for development plugins.
-4. Dependencies: `dialoguer` (recommended) or `inquire`; `notify` in the app
-   and the tool; `lexopt` or hand-written arguments. Prompts only, no
-   full-screen TUI.
-5. SDK changes 1 to 4 before 1.0, in particular short ids.
-6. `.decklyPlugin` as the package format, and the **Add Plugin File…** entry.
-7. Templates: Counter and Minimal; CI workflow on by default; licences offered.
+1. Command name and shape: the separate binary `deckly-cli` (recommended)
+   versus subcommands of the app's `deckly`; what AGENTS.md's planned
+   `deckly-cli` row means.
+2. How newcomers get the tool: shipped in the Deckly release archives and
+   installers (recommended), with `cargo install` as the other path; a PATH
+   entry in the Windows installer.
+3. Publish `deckly-sdk`, `deckly-plugin-protocol` and `deckly-cli` to
+   crates.io (needed for `cargo install` and for templates that just work);
+   until then a git dependency.
+4. How the tool reaches the running Deckly: a message over the existing
+   instance port with a token (recommended), a file watcher in the app, and
+   the run-from-a-copy rule for development plugins.
+5. Dependencies: `dialoguer` (recommended) or `inquire`; `notify` in the tool;
+   `lexopt` or hand-written arguments. Prompts only, no full-screen TUI.
+6. SDK changes 1 to 4 before 1.0, in particular short ids.
+7. `.decklyPlugin` as the package format, and the **Add Plugin File…** entry.
+8. Templates: Counter and Minimal; CI workflow on by default; licences offered.
 
 ## 10. Suggested order of work
 
 1. SDK changes (section 7, items 1 to 4), then update the book and examples,
    so the templates are written once against the final API.
-2. Host and app: `.decklyPlugin` install; link file, run-from-copy, watcher,
-   Plugins tab marks.
+2. Host and app: `.decklyPlugin` install; link file, run-from-copy, the
+   restart message on the instance port, Plugins tab marks.
 3. `deckly-cli`: `build`, `link`, `dev`, `validate`, `pack`.
 4. `new` with templates and the CI workflow.
-5. Rewrite `getting-started.md` around `cargo deckly new` and `dev`; keep the
+5. Rewrite `getting-started.md` around `deckly-cli new` and `dev`; keep the
    manual steps as "what the tool does for you".
 
 Tests: the wizard's generator runs in CI on all three systems (generate with
-`--yes`, `cargo test`, `build`, `validate`, `pack`), and `dev` is tested with
-a fake watcher event; the app side with the existing host test pattern in
+`--yes`, `cargo test`, `build`, `validate`, `pack`), and `dev` is tested against a
+fake Deckly that listens on a port; the app side with the existing host test pattern in
 `examples/counter-plugin/tests/host.rs`. Compile checks and real runs are
 reported separately per system, as AGENTS.md requires.
