@@ -13,8 +13,6 @@ pub fn cargo() -> OsString {
 
 #[derive(Clone, Debug)]
 pub struct Project {
-    /// The package name.
-    pub name: String,
     /// The folder holding the package's `Cargo.toml`.
     pub dir: PathBuf,
     pub manifest_path: PathBuf,
@@ -123,7 +121,6 @@ fn pick(meta: &Value, here: &Path, package: Option<&str>) -> Result<Project, Str
         .ok_or("cargo metadata has no manifest path")?;
     let dir = dir_of(chosen).ok_or("cargo metadata has no manifest path")?;
     Ok(Project {
-        name,
         dir,
         manifest_path,
         bin,
@@ -171,11 +168,11 @@ mod tests {
     #[test]
     fn picks_the_package_around_the_current_folder() {
         let p = pick(&meta(), Path::new("/w/hello/src"), None).unwrap();
-        assert_eq!((p.name.as_str(), p.bin.as_str()), ("hello", "hello"));
+        assert_eq!(p.bin, "hello");
         assert_eq!(p.dir, PathBuf::from("/w/hello"));
         // At the workspace root, the one that uses the SDK.
         let p = pick(&meta(), Path::new("/w"), None).unwrap();
-        assert_eq!(p.name, "hello");
+        assert_eq!(p.dir, PathBuf::from("/w/hello"));
         assert!(pick(&meta(), Path::new("/w/util"), None).is_err());
         assert!(pick(&meta(), Path::new("/w"), Some("nope")).is_err());
     }

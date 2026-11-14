@@ -1,0 +1,55 @@
+# Packs the plugin on Linux, Windows and macOS and attaches one
+# .decklyPlugin file, with every system's program, to a GitHub release.
+# Runs when a tag such as v0.0.1 is pushed; run it by hand to test it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deckly-cli
+        run: %%install_cli%%
+      - name: Test
+        run: cargo test
+      - name: Pack
+        run: deckly-cli pack -o packs/%%crate_text%%-${{ matrix.os }}.decklyPlugin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pack-${{ matrix.os }}
+          path: packs/*.decklyPlugin
+
+  release:
+    needs: pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deckly-cli
+        run: %%install_cli%%
+      - uses: actions/download-artifact@v4
+        with:
+          path: packs
+          merge-multiple: true
+      - name: Join the files of every system
+        run: deckly-cli pack --merge packs/*.decklyPlugin -o %%id_text%%-${{ github.ref_name }}.decklyPlugin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin
+          path: "*.decklyPlugin"
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" *.decklyPlugin --repo "${{ github.repository }}" --generate-notes
