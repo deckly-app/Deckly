@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 # A plugin outside this repository uses instead:
-#   deckly-sdk = { git = "https://github.com/deckly-app/Deckly", branch = "dev" }
+#   deckly-sdk = "0.1"
 #   serde = { version = "1", features = ["derive"] }
 [dependencies]
 deckly-sdk.workspace = true

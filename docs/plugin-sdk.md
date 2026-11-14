@@ -473,8 +473,9 @@ releases and version. To keep many small repositories alike:
   CI workflow that builds on Linux, Windows and macOS and attaches one
   `.decklyPlugin` per target to a GitHub release when a version tag is
   pushed.
-- A plugin depends on `deckly-sdk` from crates.io. Until the SDK is published,
-  the first plugins use a git dependency on `feature/plugin-sdk`.
+- A plugin depends on `deckly-sdk` from crates.io, where `deckly-sdk` and
+  `deckly-plugin-protocol` are published (each with its own version, from
+  0.1.0).
 
 ### Marketplace
 

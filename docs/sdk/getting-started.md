@@ -28,13 +28,11 @@ cargo new hello-deckly
 cd hello-deckly
 ```
 
-Add the SDK and `serde` to `Cargo.toml`. The SDK is not on crates.io yet, so
-it comes from the Deckly repository:
+Add the SDK, and `serde` for the settings type:
 
-```toml
-[dependencies]
-deckly-sdk = { git = "https://github.com/deckly-app/Deckly", branch = "dev" }
-serde = { version = "1", features = ["derive"] }
+```sh
+cargo add deckly-sdk
+cargo add serde --features derive
 ```
 
 ## 3. Write the action

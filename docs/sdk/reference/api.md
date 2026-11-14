@@ -9,6 +9,9 @@ Every public type and method, generated from the source by rustdoc:
   the messages, the manifest and the limits. The SDK re-exports it as
   `deckly_sdk::protocol`.
 
+The same reference for every published version is on
+[docs.rs/deckly-sdk](https://docs.rs/deckly-sdk).
+
 The quickest way in is the `prelude`, which brings in what most plugins
 use:
 
