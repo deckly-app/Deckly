@@ -89,14 +89,15 @@ Deckly is a clean-room reimplementation: study features and behavior, document f
 - Without explicit human approval for the specific operation and target, agents must not change either local or remote `dev` or `main`: no direct commits, merges, cherry-picks, rebases, resets, pushes, force-pushes, deletions, or other branch updates. Fetching and reading these branches, creating a task branch from `origin/dev`, and incorporating `origin/dev` into a task branch are allowed because they do not update the protected branches.
 - Promote `dev` into `main` only when the owner explicitly requests that promotion. Do not start this promotion on an agent's own initiative or infer permission to update `main` from approval to merge into `dev`.
 - Permission to work on or push a task branch does not authorize changes to `dev` or `main`. Approval applies only to the stated operation, target, and agreed changes; it is not blanket approval for later tasks or promotions. An explicit approval already given in the conversation remains valid within that scope; do not ask for it again.
-- Pull requests may be prepared for review, but do not enable auto-merge or otherwise bypass these approval requirements.
+- Task branches go into `dev` by a merge, after the owner approves it; do not open pull requests for them.
+- The one pull request is from `dev` into `main`, opened when the owner asks to promote `dev`. Its description is the changelog of the release: what changed for users, grouped by feature and fix, in plain words. Do not enable auto-merge or otherwise bypass these approval requirements.
 
-### Pushing with a token for this repository
+### Pushing with a token for this repository (optional)
 
-If your own `git` and `gh` login can push to `deckly-app/Deckly`, skip this. Otherwise, to let an agent push and open pull requests without your whole GitHub login:
+A convenience, not a requirement. If your own `git` and `gh` login can push to `deckly-app/Deckly`, skip this. Otherwise, to let an agent push and open pull requests without your whole GitHub login, the token can live in a `.env` file in the clone:
 
 1. Create a fine-grained token: resource owner `deckly-app`; the `Deckly` repository, or all of the organization's repositories so plugin repositories work too; Contents, Pull requests and Workflows read and write (Workflows is needed to push changes under `.github/workflows`). The organization may have to approve it.
-2. Put it in `.env` at the repository root, which git ignores, as one line: `GH_TOKEN=github_pat_...`.
+2. Put it in `.env` at the repository root as one line: `GH_TOKEN=github_pat_...`. `.env` must stay listed in `.gitignore`; check `git check-ignore .env` before you create it. Another repository of the organization gets its own `.env` (and its own `.gitignore` entry) the same way; one token for all of `deckly-app` can go into each.
 3. Once per clone, make `git` read it for GitHub. This applies to this clone and its worktrees only; other repositories keep your usual login:
 
    ```sh
