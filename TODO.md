@@ -99,20 +99,43 @@ Planned features, chosen by the project owner on 2026-11-02.
 
 ## Plugin SDK
 
-Extends the Stream Deck plugin protocol instead of replacing it, so one plugin
-runs in both apps.
+For Deckly only, in pure Rust, with its own protocol beside the Stream Deck one
+(decided on 2026-11-11). Stream Deck SDK plugins keep running as they do. See
+the [design draft](docs/plugin-sdk.md).
 
-- [ ] `deckly-sdk`: a Rust crate for writing plugins.
+- [x] `deckly-plugin-protocol`: messages and framing shared by host and SDK.
+- [x] Deckly plugins in the host: pipes instead of a WebSocket.
+- [x] `deckly-sdk`: a Rust crate for writing plugins. Done: actions, typed
+      settings, titles, states, faces, images, marks, a per-key timer,
+      settings forms, typed global settings (`Globals`), `--describe` and a
+      test harness. Not yet: plugin-wide state other than settings (statics
+      do for now).
+- [x] Key faces: the plugin describes a key and Deckly draws it.
+- [ ] Deckly plugin packages (`.decklyPlugin` archives) through the install
+      path; plain Deckly plugin folders install already.
+- [ ] Faces in the editor without a device: like Stream Deck plugins, a
+      Deckly plugin hears of a key only while a device shows it, so the
+      editor alone shows the action's icon.
+- [x] Declarative plugin settings: the plugin describes its fields and Deckly
+      draws the form in egui, with no HTML or web view. One form per action in
+      the key editor, one per plugin from the Plugins tab; dynamic choices and
+      buttons answered by the plugin.
+- [x] Plugin secrets in the system's secret store (Credential Manager, the
+      Keychain, the Secret Service), with a private file as the fallback;
+      never in a profile, an export or a backup. Only the Secret Service and
+      the file were run; Windows and macOS are compile-checked only.
+- [ ] Tell a Deckly plugin about settings that undo or redo changed; today
+      it hears of them when the key appears again.
+- [ ] Host services: a plugin asks Deckly for hotkeys, text, the active window
+      and similar, so one plugin works on X11, Wayland, Windows and macOS.
 - [ ] `deckly-cli`: `new`, `dev` (restart on changes, live log), `validate`,
       `pack`, `publish`.
-- [ ] An optional `"Deckly"` block in the manifest, and the host telling plugins
-      what it can do.
-- [ ] Declarative plugin settings: the plugin describes its fields and Deckly
-      draws the form in egui, with no HTML or web view.
+- [ ] First plugins: Timer, System stats, OBS.
 
 ## Marketplace
 
-A static registry, with no server or accounts.
+A static registry, with no server or accounts. Built together with the SDK
+(decided on 2026-11-11), as its last step.
 
 - [ ] Registry repository: one JSON file per plugin with version, release link,
       SHA-256 per system and license. Plugins are added by pull request and
@@ -127,6 +150,18 @@ A static registry, with no server or accounts.
       stats, Home Assistant, soundboard.
 - [ ] List only what the license or the author allows. Take nothing from
       Elgato's marketplace.
+
+## Repositories and organization
+
+Decided by the project owner on 2026-11-11. The steps are in the
+[design draft](docs/plugin-sdk.md).
+
+- [x] Where `deckly-sdk` lives: in this repository, next to the plugin host.
+- [ ] Create the GitHub organization `deckly-app` (the name `deckly` is taken)
+      and publish Deckly's own plugins there, one repository per plugin.
+- [ ] Move Deckly into that organization, then change the repository path in
+      the updater, the install scripts, the Homebrew formula, the AUR package
+      and the Windows installer.
 
 ## Lower priority
 
