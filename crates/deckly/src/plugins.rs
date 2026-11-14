@@ -786,7 +786,9 @@ impl Worker {
                     Some(e) => Err(e),
                     None => Ok(options),
                 };
-                runtime::lock(&self.state).choices.answer(request, answer);
+                runtime::lock(&self.state)
+                    .choices
+                    .answer(plugin, request, answer);
                 (self.repaint)();
             }
             Command::Other(event) => self.log(plugin, &format!("{event} is not supported yet")),
@@ -932,14 +934,17 @@ impl Worker {
     /// Saves new settings into the key's profile; returns the updated key
     /// as its plugin sees it.
     fn store_settings(&self, plugin: &str, context: &str, mut settings: Value) -> Option<Instance> {
-        let mut s = runtime::lock(&self.state);
+        let s = runtime::lock(&self.state);
         let own = s.own_key(plugin, context)?;
-        // A Deckly plugin's secrets go to the secret store, not the profile.
-        if let Some(form) = s
+        let form = s
             .catalog
             .action(&own.action)
-            .and_then(|(_, a)| a.form.clone())
-            .filter(|f| f.secrets().next().is_some())
+            .and_then(|(_, a)| a.form.clone());
+        // The store may take seconds to answer; the editor and the device
+        // must not wait for it behind the state lock.
+        drop(s);
+        // A Deckly plugin's secrets go to the secret store, not the profile.
+        if let Some(form) = form.filter(|f| f.secrets().next().is_some())
             && let Err(e) = secrets::keep(
                 secrets::vault(),
                 plugin,
@@ -950,6 +955,12 @@ impl Worker {
             )
         {
             self.log(plugin, &format!("a secret was not stored: {e}"));
+        }
+        let mut s = runtime::lock(&self.state);
+        // The key changed while the lock was free (the user edited or
+        // removed it): the plugin's settings were for the old one.
+        if s.own_key(plugin, context).as_ref() != Some(&own) {
+            return None;
         }
         let (page_id, index, member) = parse_context(context)?;
         let (profile_id, page) = s.page_mut(page_id)?;
@@ -999,6 +1010,54 @@ impl Worker {
             let _ = writeln!(f, "[deckly] {text}");
         }
     }
+}
+
+/// Keys of `after` whose action or settings differ from `before`'s, by
+/// context, folder keys and Multi Action members included.
+fn changed_keys(
+    before: &deckly_core::Profile,
+    after: &deckly_core::Profile,
+) -> Vec<(String, KeyConfig)> {
+    fn keys(profile: &deckly_core::Profile) -> HashMap<String, &KeyConfig> {
+        let mut out = HashMap::new();
+        for page in profile.pages.iter().chain(&profile.folders) {
+            for (&index, key) in &page.keys {
+                out.insert(context(&page.id, index), key);
+                for (list, members) in key.groups.iter().enumerate() {
+                    for (member, key) in members.iter().enumerate() {
+                        out.insert(member_context(&page.id, index, list, member), key);
+                    }
+                }
+            }
+        }
+        out
+    }
+    let old = keys(before);
+    keys(after)
+        .into_iter()
+        .filter(|(context, key)| {
+            old.get(context)
+                .is_none_or(|was| was.action != key.action || was.settings != key.settings)
+        })
+        .map(|(context, key)| (context, key.clone()))
+        .collect()
+}
+
+/// What plugins must hear after undo or redo replaced `before` with
+/// `after`: each of their keys whose settings came back, by plugin. Built
+/// under the state lock; sent after it.
+pub fn restored_settings(
+    state: &State,
+    before: &deckly_core::Profile,
+    after: &deckly_core::Profile,
+) -> Vec<(String, Instance)> {
+    changed_keys(before, after)
+        .into_iter()
+        .filter_map(|(context, key)| {
+            let (plugin, _) = state.catalog.action(&key.action)?;
+            Some((plugin.id.clone(), state.instance(&context, &key)))
+        })
+        .collect()
 }
 
 /// Sets one state's value, or every state's when no state is given.
@@ -1234,6 +1293,41 @@ mod tests {
         let page = profile.pages[0].id.clone();
         profile.pages[0].keys.insert(3, key);
         (State::new(vec![profile], Default::default()), page)
+    }
+
+    #[test]
+    fn undo_finds_every_key_whose_settings_came_back() {
+        let mut before = deckly_core::Profile::new("Test", DeviceKind::Mk2);
+        let page = before.pages[0].id.clone();
+        let mut multi = KeyConfig::new(actions::MULTI_ACTION, json!({}));
+        multi.groups[0].push(KeyConfig::new("com.example.a", json!({"n": 1})));
+        before.pages[0].keys.insert(2, multi);
+        before.pages[0]
+            .keys
+            .insert(3, KeyConfig::new("com.example.a", json!({"n": 1})));
+        before.pages[0]
+            .keys
+            .insert(4, KeyConfig::new("com.example.a", json!({"n": 1})));
+        let mut after = before.clone();
+        assert!(changed_keys(&before, &after).is_empty());
+        after.pages[0].keys.get_mut(&3).unwrap().settings = json!({"n": 2});
+        after.pages[0].keys.get_mut(&2).unwrap().groups[0][0].settings = json!({"n": 5});
+        // A key undo brings back counts as changed too.
+        after.pages[0]
+            .keys
+            .insert(5, KeyConfig::new("com.example.a", json!({})));
+        let mut changed: Vec<String> = changed_keys(&before, &after)
+            .into_iter()
+            .map(|(context, _)| context)
+            .collect();
+        changed.sort();
+        let mut expected = vec![
+            member_context(&page, 2, 0, 0),
+            context(&page, 3),
+            context(&page, 5),
+        ];
+        expected.sort();
+        assert_eq!(changed, expected);
     }
 
     #[test]

@@ -32,23 +32,56 @@ const CHOICE_WIDTH: f32 = 220.0;
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 /// Plugins' answers to choice requests, by request number; the plugin
-/// thread fills it and the editor takes from it.
+/// thread fills it and the editor takes from it. Only a request the editor
+/// made takes an answer, and only from the plugin it asked, so one plugin
+/// cannot fill another's lists by guessing request numbers.
 #[derive(Default)]
 pub struct Answers {
-    map: HashMap<u64, Result<Vec<Choice>, String>>,
+    map: HashMap<u64, Pending>,
+}
+
+struct Pending {
+    plugin: String,
+    /// The form that asked (`FormState::owner`).
+    owner: String,
+    deadline: Instant,
+    answer: Option<Result<Vec<Choice>, String>>,
 }
 
 impl Answers {
-    pub fn answer(&mut self, request: u64, answer: Result<Vec<Choice>, String>) {
-        // Answers nobody waits for any more must not pile up.
+    /// Notes a request before it is sent; false when too many wait.
+    fn register(&mut self, request: u64, plugin: &str, owner: &str, now: Instant) -> bool {
+        // Requests nobody waits for any more must not pile up.
+        self.map.retain(|_, p| p.deadline > now);
         if self.map.len() >= MAX_ANSWERS {
-            self.map.clear();
+            return false;
         }
-        self.map.insert(request, answer);
+        self.map.insert(
+            request,
+            Pending {
+                plugin: plugin.to_owned(),
+                owner: owner.to_owned(),
+                deadline: now + CHOICES_TIMEOUT,
+                answer: None,
+            },
+        );
+        true
     }
 
-    pub fn take(&mut self, request: u64) -> Option<Result<Vec<Choice>, String>> {
-        self.map.remove(&request)
+    pub fn answer(&mut self, plugin: &str, request: u64, answer: Result<Vec<Choice>, String>) {
+        if let Some(p) = self.map.get_mut(&request)
+            && p.plugin == plugin
+            && p.answer.is_none()
+        {
+            p.answer = Some(answer);
+        }
+    }
+
+    fn take(&mut self, request: u64, owner: &str) -> Option<Result<Vec<Choice>, String>> {
+        let p = self.map.get_mut(&request).filter(|p| p.owner == owner)?;
+        let answer = p.answer.take()?;
+        self.map.remove(&request);
+        Some(answer)
     }
 }
 
@@ -71,6 +104,9 @@ pub struct FormState {
     secrets: HashMap<String, String>,
     options: HashMap<String, Options>,
     recording: Option<String>,
+    /// The settings as the last frame left them, to tell which fields
+    /// someone else (the plugin, undo) changed since.
+    seen: Option<Value>,
 }
 
 /// What the form needs from around it.
@@ -110,11 +146,25 @@ impl FormState {
     }
 
     /// Asks the plugin for a field's options.
-    fn ask(&mut self, key: &str, place: &Place<'_>) {
+    fn ask(&mut self, key: &str, place: &Place<'_>, settings: &Value) {
         let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        let registered = crate::runtime::lock(place.state).choices.register(
+            request,
+            place.plugin,
+            &self.owner,
+            Instant::now(),
+        );
+        if !registered {
+            self.options.insert(
+                key.to_owned(),
+                Options::Failed("Too many lists are loading. Try again.".into()),
+            );
+            return;
+        }
+        let instance = current_instance(place, settings);
         let sent = place
             .host
-            .is_some_and(|h| h.ask_choices(place.plugin, request, key, place.instance));
+            .is_some_and(|h| h.ask_choices(place.plugin, request, key, instance.as_ref()));
         let options = if sent {
             Options::Loading {
                 request,
@@ -131,7 +181,7 @@ impl FormState {
         let Some(Options::Loading { request, since }) = self.options.get(key).cloned() else {
             return;
         };
-        let next = match answers.take(request) {
+        let next = match answers.take(request, &self.owner) {
             Some(Ok(options)) => Options::Ready(options),
             Some(Err(why)) => Options::Failed(why),
             None if now.duration_since(since) >= CHOICES_TIMEOUT => {
@@ -151,6 +201,7 @@ impl FormState {
         settings: &mut Value,
         place: &Place<'_>,
     ) -> Outcome {
+        self.forget_overwritten(settings);
         let mut outcome = Outcome::default();
         if !settings.is_object() {
             *settings = Value::Object(Map::new());
@@ -193,7 +244,25 @@ impl FormState {
         {
             ui.ctx().request_repaint_after(Duration::from_millis(200));
         }
+        // A secret being read or written shows a spinner until it is done,
+        // and a write that failed must get to its field.
+        if form.secrets().next().is_some() && secrets::ready().is_none_or(secrets::Vault::busy) {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        self.seen = Some(settings.clone());
         outcome
+    }
+
+    /// Drops input not saved yet for fields whose saved value someone else
+    /// changed since the last frame; the rest of the user's input stays.
+    fn forget_overwritten(&mut self, settings: &Value) {
+        let Some(seen) = &self.seen else {
+            return;
+        };
+        let same = |key: &String| seen.get(key) == settings.get(key);
+        self.edits.retain(|key, _| same(key));
+        self.errors.retain(|key, _| same(key));
+        self.secrets.retain(|key, _| same(key));
     }
 
     /// The help line, the message of input that was not saved, and the
@@ -211,9 +280,10 @@ impl FormState {
                 .cloned()
                 .map(Value::String)
                 .or_else(|| {
-                    secrets::typed(secrets::vault(), place.plugin, settings, &field.key)
-                        .ok()
-                        .map(Value::String)
+                    match secrets::typed(secrets::ready(), place.plugin, settings, &field.key) {
+                        secrets::Peek::Ready(v) => Some(Value::String(v.unwrap_or_default())),
+                        _ => None,
+                    }
                 }),
             _ => form.value(settings, &field.key).cloned(),
         };
@@ -226,7 +296,7 @@ impl FormState {
             ui.label(small(&problem, WARNING));
         }
         if field.kind == FieldKind::Secret
-            && let Some(why) = secrets::vault().fallback()
+            && let Some(why) = secrets::ready().and_then(secrets::Vault::fallback)
         {
             ui.add(
                 egui::Label::new(small(
@@ -383,9 +453,10 @@ impl FormState {
             }
             FieldKind::Button => {
                 if ui.button(&field.label).clicked() {
+                    let instance = current_instance(place, settings);
                     let pressed = place
                         .host
-                        .is_some_and(|h| h.press_button(place.plugin, key, place.instance));
+                        .is_some_and(|h| h.press_button(place.plugin, key, instance.as_ref()));
                     if pressed {
                         self.errors.remove(key);
                     } else {
@@ -426,23 +497,40 @@ impl FormState {
         outcome: &mut Outcome,
     ) {
         let key = field.key.as_str();
-        let stored = secrets::typed(secrets::vault(), place.plugin, settings, key);
+        let vault = secrets::ready();
+        if let (Some(vault), Some(id)) = (vault, settings.get(key).and_then(secrets::reference_id))
+            && let Some(why) = vault.take_write_error(place.plugin, id)
+        {
+            self.errors
+                .insert(key.to_owned(), format!("The secret was not stored: {why}"));
+        }
+        let stored = secrets::typed(vault, place.plugin, settings, key);
+        let loading = stored == secrets::Peek::Loading;
         let mut text = match (self.secrets.get(key), &stored) {
             (Some(t), _) => t.clone(),
-            (None, Ok(t)) => t.clone(),
-            (None, Err(_)) => String::new(),
+            (None, secrets::Peek::Ready(t)) => t.clone().unwrap_or_default(),
+            (None, _) => String::new(),
         };
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut text)
-                .password(true)
-                .hint_text(RichText::new(&field.placeholder).color(TEXT_FAINT))
-                .desired_width(FIELD_WIDTH),
-        );
+        let resp = ui
+            .horizontal(|ui| {
+                let resp = ui.add_enabled(
+                    !loading,
+                    egui::TextEdit::singleline(&mut text)
+                        .password(true)
+                        .hint_text(RichText::new(&field.placeholder).color(TEXT_FAINT))
+                        .desired_width(FIELD_WIDTH),
+                );
+                if loading {
+                    ui.spinner();
+                }
+                resp
+            })
+            .inner;
         if resp.changed() {
             self.secrets.insert(key.to_owned(), text.clone());
             self.errors.remove(key);
         }
-        if let Err(why) = &stored
+        if let secrets::Peek::Failed(why) = &stored
             && !self.errors.contains_key(key)
         {
             self.errors
@@ -458,6 +546,11 @@ impl FormState {
             self.errors.insert(key.to_owned(), why);
             return;
         }
+        let Some(vault) = vault else {
+            self.errors
+                .insert(key.to_owned(), "The secret store is still starting.".into());
+            return;
+        };
         let id = |k: &str| {
             if place.instance.is_some() {
                 secrets::new_id()
@@ -465,7 +558,9 @@ impl FormState {
                 secrets::global_id(k)
             }
         };
-        match secrets::store_typed(secrets::vault(), place.plugin, settings, key, &text, &id) {
+        // Returns at once: the store is written on the secrets thread, and
+        // a write that fails comes back to this field.
+        match secrets::store_typed(vault, place.plugin, settings, key, &text, &id) {
             Ok(()) => {
                 self.secrets.remove(key);
                 self.errors.remove(key);
@@ -493,7 +588,7 @@ impl FormState {
             .to_owned();
         let options = if field.dynamic {
             if !self.options.contains_key(key) {
-                self.ask(key, place);
+                self.ask(key, place, settings);
             }
             {
                 let mut s = crate::runtime::lock(place.state);
@@ -516,7 +611,7 @@ impl FormState {
                             .button(format!("{}  Retry", icon::ARROW_CLOCKWISE))
                             .clicked()
                         {
-                            self.ask(key, place);
+                            self.ask(key, place, settings);
                         }
                     });
                     return;
@@ -554,7 +649,7 @@ impl FormState {
                     .on_hover_text("Ask the plugin for the options again")
                     .clicked()
             {
-                self.ask(key, place);
+                self.ask(key, place, settings);
             }
         });
     }
@@ -569,6 +664,15 @@ fn number(field: &Field, n: f64) -> Value {
     }
 }
 
+/// The key as the plugin should see it now: with the settings as edited so
+/// far this frame, not as they were when the frame began.
+fn current_instance(place: &Place<'_>, settings: &Value) -> Option<Instance> {
+    place.instance.map(|i| Instance {
+        settings: settings.clone(),
+        ..i.clone()
+    })
+}
+
 fn set(settings: &mut Value, key: &str, value: Value) {
     if let Some(map) = settings.as_object_mut() {
         map.insert(key.to_owned(), value);
@@ -578,6 +682,8 @@ fn set(settings: &mut Value, key: &str, value: Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PLUGIN: &str = "com.example.obs";
 
     fn form() -> Form {
         serde_json::from_value(json!({"fields": [
@@ -624,13 +730,17 @@ mod tests {
             request,
             since: start,
         };
+        for request in [1, 2, 3] {
+            assert!(answers.register(request, PLUGIN, "", start));
+        }
         state.options.insert("a".into(), loading(1));
         state.options.insert("b".into(), loading(2));
         state.options.insert("c".into(), loading(3));
-        answers.answer(1, Ok(vec![Choice::new("x", "X")]));
-        answers.answer(2, Err("OBS is not running".into()));
+        answers.answer(PLUGIN, 1, Ok(vec![Choice::new("x", "X")]));
+        answers.answer(PLUGIN, 2, Err("OBS is not running".into()));
         // An answer for a request nobody waits for is ignored.
-        answers.answer(99, Ok(Vec::new()));
+        answers.answer(PLUGIN, 99, Ok(Vec::new()));
+        assert!(!answers.map.contains_key(&99));
         for key in ["a", "b", "c"] {
             state.poll(key, &mut answers, start + Duration::from_secs(1));
         }
@@ -646,7 +756,7 @@ mod tests {
         state.poll("c", &mut answers, start + CHOICES_TIMEOUT);
         assert!(matches!(&state.options["c"], Options::Failed(why) if why.contains("in time")));
         // A late answer changes nothing.
-        answers.answer(3, Ok(Vec::new()));
+        answers.answer(PLUGIN, 3, Ok(Vec::new()));
         state.poll("c", &mut answers, start + CHOICES_TIMEOUT * 2);
         assert!(matches!(state.options["c"], Options::Failed(_)));
     }
@@ -664,7 +774,7 @@ mod tests {
             state: &state,
         };
         let mut form = FormState::default();
-        form.ask("scene", &place);
+        form.ask("scene", &place, &json!({}));
         assert!(
             matches!(&form.options["scene"], Options::Failed(why) if why.contains("not running"))
         );
@@ -673,10 +783,58 @@ mod tests {
     #[test]
     fn answers_do_not_pile_up() {
         let mut answers = Answers::default();
+        let start = Instant::now();
         for i in 0..(MAX_ANSWERS as u64 * 3) {
-            answers.answer(i, Ok(Vec::new()));
+            answers.register(i, PLUGIN, "", start);
+            answers.answer(PLUGIN, i, Ok(Vec::new()));
         }
         assert!(answers.map.len() <= MAX_ANSWERS);
+        // Requests nobody waits for any more make room again.
+        assert!(answers.register(1000, PLUGIN, "", start + CHOICES_TIMEOUT));
+        assert_eq!(answers.map.len(), 1);
+    }
+
+    #[test]
+    fn only_the_plugin_asked_answers_and_only_the_form_that_asked_takes_it() {
+        let mut answers = Answers::default();
+        let start = Instant::now();
+        assert!(answers.register(7, PLUGIN, "page.1", start));
+        // Another plugin guessing the request number is ignored.
+        answers.answer(
+            "com.example.other",
+            7,
+            Ok(vec![Choice::new("evil", "Evil")]),
+        );
+        assert_eq!(answers.take(7, "page.1"), None);
+        answers.answer(PLUGIN, 7, Ok(vec![Choice::new("x", "X")]));
+        // A form showing another key does not take it.
+        assert_eq!(answers.take(7, "page.2"), None);
+        // The first answer counts; a second one does not replace it.
+        answers.answer(PLUGIN, 7, Ok(Vec::new()));
+        assert_eq!(
+            answers.take(7, "page.1"),
+            Some(Ok(vec![Choice::new("x", "X")]))
+        );
+        assert_eq!(answers.take(7, "page.1"), None);
+    }
+
+    #[test]
+    fn a_plugin_changing_one_field_keeps_input_in_the_others() {
+        let mut state = FormState::default();
+        let mut settings = json!({"name": "a", "step": 1});
+        state.forget_overwritten(&settings);
+        state.seen = Some(settings.clone());
+        state.edits.insert("name".into(), "not valid yet".into());
+        state.edits.insert("step".into(), "x".into());
+        state.errors.insert("step".into(), "Enter a number.".into());
+        // The plugin stores a new step; the name draft stays.
+        settings["step"] = json!(5);
+        state.forget_overwritten(&settings);
+        assert_eq!(
+            state.edits.get("name").map(String::as_str),
+            Some("not valid yet")
+        );
+        assert!(!state.edits.contains_key("step") && !state.errors.contains_key("step"));
     }
 
     #[test]

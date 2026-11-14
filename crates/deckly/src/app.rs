@@ -2622,6 +2622,9 @@ impl App {
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
+            // A long form scrolls instead of growing past the window.
+            .vscroll(true)
+            .max_height((ctx.content_rect().height() - 80.0).max(100.0))
             .show(ctx, |ui| {
                 egui::Grid::new("plugin-settings-form")
                     .num_columns(2)
@@ -3042,7 +3045,18 @@ impl App {
     ) {
         match self.history.step(profile, direction) {
             Ok(Some((restored, location))) => {
+                // Plugins keep their own copy of a key's settings; they hear
+                // of the restored ones as of any other change.
+                let restored_settings =
+                    plugins::restored_settings(&runtime::lock(&self.state), profile, &restored);
+                if let Some(host) = &self.host {
+                    for (plugin, instance) in restored_settings {
+                        host.send(&plugin, instance.event("didReceiveSettings"));
+                    }
+                }
                 *profile = restored;
+                // Input not saved yet belongs to the settings undo replaced.
+                self.key_form = Default::default();
                 view.page = location.page.min(profile.pages.len().saturating_sub(1));
                 view.path = location.path;
                 view.live.page = view.page + 1;

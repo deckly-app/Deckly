@@ -124,7 +124,16 @@ pub fn program(dir: &Path, m: &proto::Manifest) -> Result<std::path::PathBuf, St
 /// frames, written by the writer thread.
 #[derive(Clone)]
 pub struct Pipe {
-    tx: SyncSender<Vec<u8>>,
+    tx: SyncSender<Outgoing>,
+}
+
+enum Outgoing {
+    Frame(Vec<u8>),
+    Filtered {
+        message: HostMessage,
+        plugin: String,
+        filter: crate::SettingsFilter,
+    },
 }
 
 pub enum SendError {
@@ -147,9 +156,28 @@ impl Pipe {
     }
 
     pub fn send_frame(&self, frame: Vec<u8>) -> Result<(), SendError> {
-        self.tx.try_send(frame).map_err(|e| match e {
+        self.enqueue(Outgoing::Frame(frame))
+    }
+
+    fn enqueue(&self, outgoing: Outgoing) -> Result<(), SendError> {
+        self.tx.try_send(outgoing).map_err(|e| match e {
             TrySendError::Full(_) => SendError::Full,
             TrySendError::Disconnected(_) => SendError::Closed,
+        })
+    }
+
+    /// Resolves settings on the writer thread, preserving message order without
+    /// waiting on an OS service in the caller or under the host's mutex.
+    pub fn send_filtered(
+        &self,
+        message: HostMessage,
+        plugin: String,
+        filter: crate::SettingsFilter,
+    ) -> Result<(), SendError> {
+        self.enqueue(Outgoing::Filtered {
+            message,
+            plugin,
+            filter,
         })
     }
 
@@ -163,8 +191,22 @@ impl Pipe {
     }
 }
 
-fn write_frames(mut stdin: ChildStdin, rx: Receiver<Vec<u8>>) {
-    while let Ok(frame) = rx.recv() {
+fn write_frames(mut stdin: impl Write, rx: Receiver<Outgoing>) {
+    while let Ok(outgoing) = rx.recv() {
+        let frame = match outgoing {
+            Outgoing::Frame(frame) => frame,
+            Outgoing::Filtered {
+                mut message,
+                plugin,
+                filter,
+            } => {
+                filter_settings(&mut message, &|v| filter(&plugin, v));
+                let Ok(frame) = encode_message(&message) else {
+                    continue;
+                };
+                frame
+            }
+        };
         if stdin
             .write_all(&frame)
             .and_then(|()| stdin.flush())
@@ -465,6 +507,46 @@ mod tests {
             in_multi_action: false,
             desired_state: None,
         }
+    }
+
+    #[test]
+    fn secrets_are_put_back_on_the_writer_thread_in_order() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let mut first = translate(&instance().event("keyDown")).unwrap();
+        if let HostMessage::KeyDown { key } = &mut first {
+            key.settings = json!({"password": {"deckly_secret": "id"}});
+        }
+        let filter: crate::SettingsFilter = Arc::new(|plugin: &str, v: &mut Value| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("password".into(), json!(format!("secret of {plugin}")));
+            }
+        });
+        let plain = translate(&instance().event("keyUp")).unwrap();
+        let pipe = Pipe { tx };
+        assert!(
+            pipe.send_filtered(first, "com.example.a".into(), filter)
+                .is_ok()
+        );
+        assert!(pipe.send(&plain).is_ok());
+        drop(pipe);
+        let mut out = Vec::new();
+        write_frames(&mut out, rx);
+        let mut reader = deckly_plugin_protocol::Reader::new(out.as_slice());
+        let Some(Received {
+            message: HostMessage::KeyDown { key },
+            ..
+        }) = reader.read::<HostMessage>().unwrap()
+        else {
+            panic!("the filtered message is not first");
+        };
+        assert_eq!(key.settings["password"], "secret of com.example.a");
+        assert!(matches!(
+            reader.read::<HostMessage>().unwrap(),
+            Some(Received {
+                message: HostMessage::KeyUp { .. },
+                ..
+            })
+        ));
     }
 
     #[test]

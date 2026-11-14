@@ -327,18 +327,19 @@ impl Host {
         plugin: &str,
         token: &str,
         pipe: &pipe::Pipe,
-        mut message: HostMessage,
+        message: HostMessage,
     ) -> bool {
         let filter = lock(&self.shared).filter.clone();
-        if let Some(filter) = filter {
-            pipe::filter_settings(&mut message, &|v| filter(plugin, v));
-        }
         use deckly_plugin_protocol::Validate;
         if let Err(e) = message.validate() {
             append_log(&self.logs_dir, plugin, &format!("not sent: {e}"));
             return true;
         }
-        match pipe.send(&message) {
+        let sent = match filter {
+            Some(filter) => pipe.send_filtered(message, plugin.to_owned(), filter),
+            None => pipe.send(&message),
+        };
+        match sent {
             Ok(()) => true,
             Err(pipe::SendError::Full) => {
                 let _ = self.ctl.send(Ctl::PipeStuck {
@@ -932,7 +933,13 @@ impl Supervisor {
         match event {
             pipe::Incoming::Message(received) => {
                 if debug() {
-                    self.note(id, &format!("<- {:?}", received.message));
+                    // Only the kind: settings a plugin sends carry its
+                    // secrets' values.
+                    let kind = serde_json::to_value(&received.message)
+                        .ok()
+                        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_owned))
+                        .unwrap_or_default();
+                    self.note(id, &format!("<- {kind}"));
                 }
                 if !registered {
                     if let Err(e) = pipe::check_ready(&received.message) {
@@ -1417,8 +1424,8 @@ fn append_log(logs_dir: &Path, id: &str, text: &str) {
     }
 }
 
-/// DECKLY_PLUGIN_DEBUG=1 writes every message to and from plugins into
-/// their logs.
+/// DECKLY_PLUGIN_DEBUG=1 writes messages to and from plugins into their
+/// logs; what a Deckly plugin sends only by kind, since it may hold secrets.
 fn debug() -> bool {
     static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DEBUG.get_or_init(|| std::env::var_os("DECKLY_PLUGIN_DEBUG").is_some())
