@@ -95,7 +95,7 @@ Deckly is a clean-room reimplementation: study features and behavior, document f
 
 If your own `git` and `gh` login can push to `deckly-app/Deckly`, skip this. Otherwise, to let an agent push and open pull requests without your whole GitHub login:
 
-1. Create a fine-grained token: resource owner `deckly-app`, only the `Deckly` repository, Contents and Pull requests read and write. The organization may have to approve it.
+1. Create a fine-grained token: resource owner `deckly-app`; the `Deckly` repository, or all of the organization's repositories so plugin repositories work too; Contents, Pull requests and Workflows read and write (Workflows is needed to push changes under `.github/workflows`). The organization may have to approve it.
 2. Put it in `.env` at the repository root, which git ignores, as one line: `GH_TOKEN=github_pat_...`.
 3. Once per clone, make `git` read it for GitHub. This applies to this clone and its worktrees only; other repositories keep your usual login:
 
