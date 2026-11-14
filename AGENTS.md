@@ -91,6 +91,23 @@ Deckly is a clean-room reimplementation: study features and behavior, document f
 - Permission to work on or push a task branch does not authorize changes to `dev` or `main`. Approval applies only to the stated operation, target, and agreed changes; it is not blanket approval for later tasks or promotions. An explicit approval already given in the conversation remains valid within that scope; do not ask for it again.
 - Pull requests may be prepared for review, but do not enable auto-merge or otherwise bypass these approval requirements.
 
+### Pushing with a token for this repository
+
+If your own `git` and `gh` login can push to `deckly-app/Deckly`, skip this. Otherwise, to let an agent push and open pull requests without your whole GitHub login:
+
+1. Create a fine-grained token: resource owner `deckly-app`, only the `Deckly` repository, Contents and Pull requests read and write. The organization may have to approve it.
+2. Put it in `.env` at the repository root, which git ignores, as one line: `GH_TOKEN=github_pat_...`.
+3. Once per clone, make `git` read it for GitHub. This applies to this clone and its worktrees only; other repositories keep your usual login:
+
+   ```sh
+   git config --local credential.https://github.com.helper ''
+   git config --local --add credential.https://github.com.helper '!f() { test "$1" = get || exit 0; t=$(sed -n "s/^GH_TOKEN=//p" "$(git rev-parse --path-format=absolute --git-common-dir)/../.env" 2>/dev/null); test -n "$t" && printf "username=x-access-token\npassword=%s\n" "$t"; }; f'
+   ```
+
+4. Agents run `gh` with the same token: `GH_TOKEN=$(sed -n 's/^GH_TOKEN=//p' .env) gh pr create ...`.
+
+Never commit `.env`, and never print the token in chat, logs, commit messages, or pull requests. To stop using it, delete `.env` and run `git config --local --unset-all credential.https://github.com.helper`.
+
 ### Implementation and validation
 
 - Read the relevant code and docs before changing files. Keep changes small; no speculative architecture.
