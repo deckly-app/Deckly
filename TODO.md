@@ -47,6 +47,24 @@ Planned features, chosen by the project owner on 2026-11-02.
 - [ ] Hotkey with up to four combinations in a row. Deckly presses one, and
       imported keys lose the rest.
 
+## Input and editing
+
+Chosen by the project owner on 2026-11-14.
+
+- [ ] Hold layer (Fn): holding one key temporarily shows another set of
+      actions on the other keys, with their matching images and titles.
+      Releasing it restores the previous set. Release, device disconnect and
+      session lock must never leave the temporary layer stuck on.
+- [ ] Pin keys across profiles: pin a key to its position, then see the same
+      action there when switching to another profile. A local action in that
+      position overrides the pinned key for that profile without removing
+      the pin from other profiles. Page/folder behavior and the scope across
+      devices and models are not decided yet.
+- [ ] Select and edit multiple keys: Ctrl/Shift selection or a selection
+      rectangle, shared appearance edits, copying or moving a block to
+      another page, and clearing the selection. Each bulk edit is undoable
+      as one operation.
+
 ## Key look
 
 - [x] Key title fonts: font family, bold, italic, underline.
