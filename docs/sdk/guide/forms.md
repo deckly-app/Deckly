@@ -14,7 +14,6 @@ the keys equal to the field names of your settings type.
 use deckly_sdk::prelude::*;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
 struct PingSettings {
     host: String,
     every: u32,
@@ -39,7 +38,7 @@ impl Default for PingSettings {
 struct Ping;
 
 impl Action for Ping {
-    const ID: &'static str = "com.example.net.ping";
+    const ID: &'static str = "ping";
     const NAME: &'static str = "Ping";
     type Settings = PingSettings;
 
@@ -121,11 +120,11 @@ The action's `choices` handler answers:
 
 ```rust
 # use deckly_sdk::prelude::*;
-# #[derive(Clone, Default, Serialize, Deserialize)] #[serde(default)] struct SceneSettings { scene: String }
+# #[derive(Clone, Default, Serialize, Deserialize)] struct SceneSettings { scene: String }
 # fn scene_names() -> Result<Vec<String>, String> { Ok(vec!["Live".into()]) }
 # #[derive(Default)] struct Scene;
 impl Action for Scene {
-#     const ID: &'static str = "com.example.obs.scene"; const NAME: &'static str = "Scene";
+#     const ID: &'static str = "scene"; const NAME: &'static str = "Scene";
 #     type Settings = SceneSettings;
     // ...
     fn form(form: &mut Form) {
@@ -164,10 +163,10 @@ action's `button` handler with the button's key:
 
 ```rust
 # use deckly_sdk::prelude::*;
-# #[derive(Clone, Default, Serialize, Deserialize)] #[serde(default)] struct CountSettings { count: u64 }
+# #[derive(Clone, Default, Serialize, Deserialize)] struct CountSettings { count: u64 }
 # #[derive(Default)] struct Count;
 # impl Action for Count {
-#     const ID: &'static str = "com.example.count.count"; const NAME: &'static str = "Count";
+#     const ID: &'static str = "count"; const NAME: &'static str = "Count";
 #     type Settings = CountSettings;
 fn button(&mut self, key: &Key<Self>, button: &str) {
     if button == "reset" {

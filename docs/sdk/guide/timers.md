@@ -4,7 +4,9 @@
 
 `key.every(period)` calls the action's `tick` handler on that key every
 `period`, until `key.stop_timer()` or until the key disappears. `tick` gets
-`&mut self`, so it reads and changes the key's state with no locks.
+`&mut self`, so it reads and changes the key's state with no locks. After
+each tick the SDK asks `face` again, so a timer with an empty `tick` is
+enough to keep a face current.
 
 ```rust
 # use deckly_sdk::prelude::*;
@@ -16,7 +18,7 @@ struct Stopwatch {
 }
 
 impl Action for Stopwatch {
-    const ID: &'static str = "com.example.time.stopwatch";
+    const ID: &'static str = "stopwatch";
     const NAME: &'static str = "Stopwatch";
     type Settings = Empty;
 
@@ -27,18 +29,12 @@ impl Action for Stopwatch {
             self.started = Some(Instant::now());
             key.every(Duration::from_millis(100));
         }
-        self.draw(key);
     }
 
-    fn tick(&mut self, key: &Key<Self>) {
-        self.draw(key);
-    }
-}
-
-impl Stopwatch {
-    fn draw(&self, key: &Key<Self>) {
+    // Asked after every tick too, so the time on the key runs.
+    fn face(&self, _key: &Key<Self>) -> Option<Face> {
         let secs = self.started.map_or(0.0, |t| t.elapsed().as_secs_f32());
-        key.set_face(Face::new().label("Stopwatch").value(format!("{secs:.1}")));
+        Some(Face::new().label("Stopwatch").value(format!("{secs:.1}")))
     }
 }
 # fn main() {}
@@ -54,17 +50,19 @@ impl Stopwatch {
 
 All of a plugin's events run on one thread, one after another. A handler
 that waits for the network holds up every key of the plugin. Do slow work
-on a thread of its own and send the result to the key from there: a
+on a thread of its own and send the result to the key from there with
+`set_face` or the other `set_` calls: a
 [`Key`](actions.md#what-a-key-can-do) can be cloned and moved to any
-thread.
+thread. (An action that draws from a thread leaves `face` out, since the
+next event would draw over it.)
 
 ```rust
 # use deckly_sdk::prelude::*;
-# #[derive(Clone, Default, Serialize, Deserialize)] #[serde(default)] struct WeatherSettings { city: String }
+# #[derive(Clone, Default, Serialize, Deserialize)] struct WeatherSettings { city: String }
 # fn fetch_temperature(_city: &str) -> Result<f32, String> { Ok(21.0) }
 # #[derive(Default)] struct Weather;
 # impl Action for Weather {
-#     const ID: &'static str = "com.example.weather.now"; const NAME: &'static str = "Weather";
+#     const ID: &'static str = "now"; const NAME: &'static str = "Weather";
 #     type Settings = WeatherSettings;
 fn key_down(&mut self, key: &Key<Self>) {
     let key = key.clone();

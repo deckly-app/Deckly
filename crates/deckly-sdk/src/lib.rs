@@ -19,21 +19,20 @@
 //! }
 //!
 //! impl Action for Counter {
-//!     const ID: &'static str = "com.example.counter.count";
+//!     const ID: &'static str = "count";
 //!     const NAME: &'static str = "Counter";
 //!     type Settings = CounterSettings;
 //!
 //!     fn key_down(&mut self, key: &Key<Self>) {
 //!         self.count += key.settings().step.max(1);
-//!         key.set_face(Face::new().value(self.count.to_string()).label("Count"));
+//!     }
+//!
+//!     fn face(&self, _key: &Key<Self>) -> Option<Face> {
+//!         Some(Face::new().value(self.count.to_string()).label("Count"))
 //!     }
 //! }
 //!
-//! fn main() -> deckly_sdk::Result<()> {
-//!     Plugin::new("com.example.counter", "Counter")
-//!         .action::<Counter>()
-//!         .run()
-//! }
+//! deckly_sdk::plugin!("com.example.counter", "Counter", [Counter]);
 //! ```
 //!
 //! Standard output belongs to the protocol: anything printed there with
@@ -48,6 +47,7 @@ pub mod form;
 mod globals;
 mod key;
 mod run;
+mod settings;
 pub mod testing;
 
 pub use deckly_plugin_protocol as protocol;
@@ -121,7 +121,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Every handler has a default that does nothing.
 pub trait Action: Default + Send + 'static {
-    /// A reverse-DNS id that starts with the plugin id.
+    /// The action's id. A short name without dots (`"wave"`) stands for
+    /// `<plugin id>.wave`; a full id (`"com.example.hello.wave"`) must start
+    /// with the plugin id. Profiles store the full id.
     const ID: &'static str;
     /// The name in Deckly's action list.
     const NAME: &'static str;
@@ -130,7 +132,9 @@ pub trait Action: Default + Send + 'static {
     const ICON: &'static str = "";
 
     /// The key's settings, stored by Deckly in the profile. Keys start with
-    /// `Default`; settings that no longer fit the type read as `Default`.
+    /// `Default`. Saved settings are read over `Default`: a field they lack,
+    /// or one that no longer fits its type, keeps its default value and the
+    /// other fields keep theirs.
     type Settings: Serialize + DeserializeOwned + Default + Clone + Send + 'static;
 
     /// The states a key can be in, with the title and image Deckly shows
@@ -172,12 +176,67 @@ pub trait Action: Default + Send + 'static {
 
     /// The plugin's global settings changed; see [`Key::globals`].
     fn global_settings_changed(&mut self, _key: &Key<Self>) {}
+
+    /// What the key shows, drawn by Deckly. The SDK asks after the key
+    /// appears and after every event and tick, and sends the face only when
+    /// it differs from the one shown. `None`, the default, leaves the key
+    /// to [`Key::set_face`] and the other `set_` calls.
+    fn face(&self, _key: &Key<Self>) -> Option<Face> {
+        None
+    }
+}
+
+/// The full id of an action: a short id (no dots) is put after the plugin
+/// id.
+pub(crate) fn full_action_id(plugin: &str, action: &str) -> String {
+    if action.contains('.') {
+        action.to_owned()
+    } else {
+        format!("{plugin}.{action}")
+    }
+}
+
+/// Builds the plugin and its `main` in one line:
+///
+/// ```no_run
+/// # use deckly_sdk::prelude::*;
+/// # #[derive(Default)] struct Wave;
+/// # impl Action for Wave {
+/// #     const ID: &'static str = "wave";
+/// #     const NAME: &'static str = "Wave";
+/// #     type Settings = serde_json::Value;
+/// # }
+/// deckly_sdk::plugin!("com.example.hello", "Hello", [Wave]);
+/// ```
+///
+/// It defines `fn plugin() -> Plugin`, for the tests, and `fn main()`. The
+/// version, authors, licence and description come from `Cargo.toml`. For
+/// anything more (icons, a plugin-wide form) build the [`Plugin`] yourself.
+#[macro_export]
+macro_rules! plugin {
+    ($id:expr, $name:expr, [$($action:ty),* $(,)?] $(,)?) => {
+        /// The plugin, as `main` runs it and the tests start it.
+        fn plugin() -> $crate::Plugin {
+            $crate::Plugin::new($id, $name)
+                .version(env!("CARGO_PKG_VERSION"))
+                .author(&env!("CARGO_PKG_AUTHORS").replace(':', ", "))
+                .license(env!("CARGO_PKG_LICENSE"))
+                .description(env!("CARGO_PKG_DESCRIPTION"))
+                $(.action::<$action>())*
+        }
+
+        fn main() {
+            plugin().run_or_exit()
+        }
+    };
 }
 
 /// A plugin: its description and its actions.
 pub struct Plugin {
     manifest: Manifest,
     makers: Vec<run::Maker>,
+    /// Mistakes found while adding actions, reported by [`Plugin::check`].
+    problems: Vec<String>,
     pub(crate) on_choices: Option<ChoicesHandler>,
     pub(crate) on_button: Option<ButtonHandler>,
     pub(crate) on_globals: Option<GlobalsHandler>,
@@ -197,6 +256,7 @@ impl Plugin {
                 ..Manifest::default()
             },
             makers: Vec::new(),
+            problems: Vec::new(),
             on_choices: None,
             on_button: None,
             on_globals: None,
@@ -236,19 +296,29 @@ impl Plugin {
     }
 
     pub fn action<A: Action>(mut self) -> Self {
+        let id = full_action_id(&self.manifest.id, A::ID);
+        if !id.starts_with(&format!("{}.", self.manifest.id)) {
+            self.problems.push(format!(
+                "action {id} does not start with the plugin id {}; use a short id such as \"{}\"",
+                self.manifest.id,
+                id.rsplit('.').next().unwrap_or_default()
+            ));
+        }
+        let mut form = Form::default();
+        A::form(&mut form);
+        let form = form.into_description();
+        if let Some(form) = &form {
+            self.problems.extend(unknown_fields::<A>(&id, form));
+        }
         self.manifest.actions.push(ManifestAction {
-            id: A::ID.to_owned(),
+            id: id.clone(),
             name: A::NAME.to_owned(),
             icon: A::ICON.to_owned(),
             tooltip: A::TOOLTIP.to_owned(),
             states: A::states(),
-            form: {
-                let mut form = Form::default();
-                A::form(&mut form);
-                form.into_description()
-            },
+            form,
         });
-        self.makers.push(run::maker::<A>());
+        self.makers.push(run::maker::<A>(id));
         self
     }
 
@@ -291,7 +361,14 @@ impl Plugin {
 
     /// Checks the manifest as Deckly will: a form over a limit or with a
     /// default its field refuses is an error here rather than in Deckly.
+    /// Also checks what Deckly cannot see: that every action id starts with
+    /// the plugin id, and that every form field names a field of the
+    /// action's settings (as `Default` serializes them), so a typo in a key
+    /// is found by a test.
     pub fn check(&self) -> Result<()> {
+        if let Some(problem) = self.problems.first() {
+            return Err(Error::Protocol(problem.clone()));
+        }
         self.manifest()
             .validate()
             .map_err(|e| Error::Protocol(format!("the manifest is not valid: {e}")))
@@ -324,6 +401,17 @@ impl Plugin {
         run::run(self, std::io::stdin(), std::io::stdout(), true)
     }
 
+    /// Runs the plugin like [`Plugin::run`]; on an error it prints the error
+    /// to standard error and exits with status 1. The `main` that
+    /// [`plugin!`] writes calls it.
+    pub fn run_or_exit(self) {
+        let name = self.manifest.name.clone();
+        if let Err(e) = self.run() {
+            eprintln!("{name}: {e}");
+            std::process::exit(1);
+        }
+    }
+
     /// Runs the plugin on any pair of streams; [`testing::Harness`] uses it.
     pub fn run_with<R, W>(self, input: R, output: W) -> Result<()>
     where
@@ -332,6 +420,24 @@ impl Plugin {
     {
         run::run(self, input, output, false)
     }
+}
+
+/// The form fields of action `id` whose keys are not fields of its
+/// settings. Settings that do not serialize to an object are not checked.
+fn unknown_fields<A: Action>(id: &str, form: &protocol::Form) -> Vec<String> {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(A::Settings::default()) else {
+        return Vec::new();
+    };
+    form.fields
+        .iter()
+        .filter(|f| f.kind.has_value() && !fields.contains_key(&f.key))
+        .map(|f| {
+            format!(
+                "the form of action {id} has a field {:?} that its settings do not have",
+                f.key
+            )
+        })
+        .collect()
 }
 
 /// The pages of the SDK book (`docs/sdk`), so `cargo test` compiles and runs

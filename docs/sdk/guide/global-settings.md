@@ -13,7 +13,6 @@ Describe it on the `Plugin`, like an action's form:
 use deckly_sdk::prelude::*;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
 struct ObsGlobals {
     address: String,
     password: String,
@@ -27,7 +26,7 @@ impl Default for ObsGlobals {
 
 # #[derive(Default)] struct Scene;
 # #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
-# impl Action for Scene { const ID: &'static str = "com.example.obs.scene"; const NAME: &'static str = "Scene"; type Settings = Empty; }
+# impl Action for Scene { const ID: &'static str = "scene"; const NAME: &'static str = "Scene"; type Settings = Empty; }
 fn main() -> deckly_sdk::Result<()> {
     Plugin::new("com.example.obs", "OBS")
         .action::<Scene>()
@@ -64,12 +63,12 @@ returns a [`Globals`]:
 
 ```rust
 # use deckly_sdk::prelude::*;
-# #[derive(Clone, Default, Serialize, Deserialize)] #[serde(default)]
+# #[derive(Clone, Default, Serialize, Deserialize)]
 # struct ObsGlobals { address: String, password: String }
 # #[derive(Default)] struct Scene;
 # #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
 # impl Action for Scene {
-#     const ID: &'static str = "com.example.obs.scene"; const NAME: &'static str = "Scene";
+#     const ID: &'static str = "scene"; const NAME: &'static str = "Scene";
 #     type Settings = Empty;
 fn key_down(&mut self, key: &Key<Self>) {
     let globals = key.globals();
@@ -90,7 +89,7 @@ fn global_settings_changed(&mut self, key: &Key<Self>) {
 
 | On `Globals` | Does |
 | --- | --- |
-| `get::<G>()` | The settings as your type. Settings that do not fit read as `Default`. |
+| `get::<G>()` | The settings as your type, read over `G::default()`. |
 | `set(&g)` | Stores new settings; they reach every key. |
 | `update::<G>(\|g\| ...)` | Changes them in place and stores them. |
 | `value()` | The raw JSON. |
@@ -100,8 +99,9 @@ The SDK asks Deckly for the global settings as soon as the plugin starts.
 Until they arrive, `get` returns the defaults and `is_loaded()` is false;
 when they arrive, `global_settings_changed` runs on every key.
 
-The same rules as for key settings apply: `#[serde(default)]`, a field for
-every field of the form (or a `#[serde(flatten)]` map for the rest), a JSON
+The same rules as for key settings apply: they are read over `Default`, so
+a missing or unfitting field keeps its default; a field for every field of
+the form (or a `#[serde(flatten)]` map for the rest), a JSON
 object of at most 64 KiB.
 
 ## Secrets

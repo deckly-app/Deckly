@@ -9,7 +9,6 @@ use deckly_sdk::prelude::*;
 
 /// What the user sets for each key; Deckly saves it in the profile.
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
 struct CounterSettings {
     step: u32,
 }
@@ -21,21 +20,21 @@ struct Counter {
 }
 
 impl Action for Counter {
-    const ID: &'static str = "com.example.counter.count";
+    const ID: &'static str = "count";
     const NAME: &'static str = "Counter";
     type Settings = CounterSettings;
 
     fn key_down(&mut self, key: &Key<Self>) {
         self.count += key.settings().step.max(1);
-        key.set_face(Face::new().value(self.count.to_string()).label("Count"));
+    }
+
+    /// What the key shows; Deckly draws it again whenever it changes.
+    fn face(&self, _key: &Key<Self>) -> Option<Face> {
+        Some(Face::new().value(self.count.to_string()).label("Count"))
     }
 }
 
-fn main() -> deckly_sdk::Result<()> {
-    Plugin::new("com.example.counter", "Counter")
-        .action::<Counter>()
-        .run()
-}
+deckly_sdk::plugin!("com.example.counter", "Counter", [Counter]);
 ```
 
 > **Preview.** The SDK is at version 0.0.x and its API may still change. Deckly

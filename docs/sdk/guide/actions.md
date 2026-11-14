@@ -12,7 +12,6 @@ Each action is a Rust type that implements [`Action`]:
 use deckly_sdk::prelude::*;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
 struct MuteSettings {
     device: String,
 }
@@ -23,9 +22,10 @@ struct Mute {
 }
 
 impl Action for Mute {
-    /// Reverse-DNS, starts with the plugin id. Never change it after
-    /// release: profiles store it.
-    const ID: &'static str = "com.example.audio.mute";
+    /// A short id; the SDK puts the plugin id in front
+    /// (`com.example.audio.mute`). Never change it after release:
+    /// profiles store it.
+    const ID: &'static str = "mute";
     /// Shown in Deckly's action list.
     const NAME: &'static str = "Mute";
     /// Optional: a hover text in the action list.
@@ -35,9 +35,13 @@ impl Action for Mute {
 
     type Settings = MuteSettings;
 
-    fn key_down(&mut self, key: &Key<Self>) {
+    fn key_down(&mut self, _key: &Key<Self>) {
         self.muted = !self.muted;
-        key.set_title(if self.muted { "Muted" } else { "Live" });
+    }
+
+    /// What the key shows, asked after every event.
+    fn face(&self, _key: &Key<Self>) -> Option<Face> {
+        Some(Face::new().value(if self.muted { "Muted" } else { "Live" }))
     }
 }
 #
@@ -46,24 +50,49 @@ impl Action for Mute {
 # }
 ```
 
-Register every action on the plugin:
+Register every action on the plugin. The `plugin!` macro writes `main` and a
+`plugin()` function for the tests, and takes the version, authors, licence
+and description from `Cargo.toml`:
 
 ```rust,no_run
 # use deckly_sdk::prelude::*;
 # #[derive(Default)] struct Mute;
-# impl Action for Mute { const ID: &'static str = "com.example.audio.mute"; const NAME: &'static str = "Mute"; type Settings = Empty; }
+# impl Action for Mute { const ID: &'static str = "mute"; const NAME: &'static str = "Mute"; type Settings = Empty; }
 # #[derive(Default)] struct Volume;
-# impl Action for Volume { const ID: &'static str = "com.example.audio.volume"; const NAME: &'static str = "Volume"; type Settings = Empty; }
+# impl Action for Volume { const ID: &'static str = "volume"; const NAME: &'static str = "Volume"; type Settings = Empty; }
 # #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
-fn main() -> deckly_sdk::Result<()> {
+deckly_sdk::plugin!("com.example.audio", "Audio", [Mute, Volume]);
+```
+
+Without the macro, build the [`Plugin`] yourself. Do that when the plugin
+needs more: an icon, a plugin-wide [form](global-settings.md), handlers of
+its own.
+
+```rust,no_run
+# use deckly_sdk::prelude::*;
+# #[derive(Default)] struct Mute;
+# impl Action for Mute { const ID: &'static str = "mute"; const NAME: &'static str = "Mute"; type Settings = Empty; }
+# #[derive(Default)] struct Volume;
+# impl Action for Volume { const ID: &'static str = "volume"; const NAME: &'static str = "Volume"; type Settings = Empty; }
+# #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
+fn plugin() -> Plugin {
     Plugin::new("com.example.audio", "Audio")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Ada Lovelace")
+        .icon("assets/plugin.svg")
         .action::<Mute>()
         .action::<Volume>()
-        .run()
+}
+
+fn main() -> deckly_sdk::Result<()> {
+    plugin().run()
 }
 ```
+
+An action id without dots is short: `"mute"` stands for
+`com.example.audio.mute`. A full id works too, and must start with the
+plugin id. Deckly, the profiles and the [manifest](../reference/manifest.md)
+always use the full id; the test [harness](testing.md) accepts both.
 
 ## One value per key
 
@@ -81,7 +110,7 @@ Every handler has an empty default; implement the ones you need.
 
 | Handler | Called when |
 | --- | --- |
-| `key_appear` | The key is shown on a device. Draw it here. |
+| `key_appear` | The key is shown on a device. Start its timer here. |
 | `key_disappear` | The key is no longer shown. The value is dropped right after. |
 | `key_down` | The key is pressed. |
 | `key_up` | The key is released. |
@@ -90,9 +119,10 @@ Every handler has an empty default; implement the ones you need.
 | `button` | The user pressed a button in the key's [form](forms.md). |
 | `global_settings_changed` | The plugin's [global settings](global-settings.md) changed. |
 
-Two more are not about one key: `form` describes the settings form, and
-`choices` lists the options of a dynamic choice. See
-[Settings forms](forms.md).
+After each of them the SDK calls `face`, which returns what the key shows
+(see [Drawing keys](drawing.md#faces)). Two more are not about one key:
+`form` describes the settings form, and `choices` lists the options of a
+dynamic choice. See [Settings forms](forms.md).
 
 A plugin hears of a key only while a device shows it. In the editor with no
 device connected, the key shows the action's icon, and no events arrive.
@@ -137,4 +167,5 @@ the step gets `key_down` and `key_up` like a pressed key, and
 works the same on a key and in a Multi Action.
 
 [`Action`]: https://deckly-app.github.io/Deckly/api/deckly_sdk/trait.Action.html
+[`Plugin`]: https://deckly-app.github.io/Deckly/api/deckly_sdk/struct.Plugin.html
 [`Key`]: https://deckly-app.github.io/Deckly/api/deckly_sdk/struct.Key.html

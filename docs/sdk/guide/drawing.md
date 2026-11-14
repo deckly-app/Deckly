@@ -9,8 +9,10 @@ A key can show four things, from simple to free-form:
 | **Image** | A picture you make yourself: PNG, JPEG, SVG or raw pixels. |
 | **State** | A key with a few fixed looks, such as on and off. |
 
-All of them are methods on [`Key`](actions.md#what-a-key-can-do). Each
-update is sent only if it differs from the last one for that key.
+A face can come from the action's `face` method, which the SDK asks after
+every event. Everything else, and faces from another thread, are methods on
+[`Key`](actions.md#what-a-key-can-do). Each update is sent only if it
+differs from the last one for that key.
 
 ## Titles
 
@@ -19,7 +21,7 @@ update is sent only if it differs from the last one for that key.
 # #[derive(Default)] struct Clock;
 # #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
 # impl Action for Clock {
-#     const ID: &'static str = "com.example.clock.time"; const NAME: &'static str = "Time";
+#     const ID: &'static str = "time"; const NAME: &'static str = "Time";
 #     type Settings = Empty;
 fn key_appear(&mut self, key: &Key<Self>) {
     key.set_title("12:30");
@@ -47,28 +49,51 @@ user's deck.
 └──────────────┘
 ```
 
+Return the face from the action's `face` method. The SDK asks for it after
+the key appears and after every event and tick, and sends it only when it
+changed, so the method just turns the action's state into a face:
+
 ```rust
 # use deckly_sdk::prelude::*;
-# #[derive(Default)] struct Cpu;
+# use std::time::Duration;
 # #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
-# impl Action for Cpu {
-#     const ID: &'static str = "com.example.stats.cpu"; const NAME: &'static str = "CPU";
-#     type Settings = Empty;
-fn tick(&mut self, key: &Key<Self>) {
-    let load = 0.42; // read the real load here
-    key.set_face(
-        Face::new()
-            .label("CPU")
-            .value(format!("{:.0}%", load * 100.0))
-            .detail("8 cores")
-            .progress(load)
-            .accent(Color::rgb(0x4c, 0xc2, 0xff))
-            .icon("assets/cpu.svg"),
-    );
+#[derive(Default)]
+struct Cpu {
+    load: f32,
 }
-# }
+
+impl Action for Cpu {
+    const ID: &'static str = "cpu";
+    const NAME: &'static str = "CPU";
+    type Settings = Empty;
+
+    fn key_appear(&mut self, key: &Key<Self>) {
+        key.every(Duration::from_secs(1));
+    }
+
+    fn tick(&mut self, _key: &Key<Self>) {
+        self.load = 0.42; // read the real load here
+    }
+
+    fn face(&self, _key: &Key<Self>) -> Option<Face> {
+        Some(
+            Face::new()
+                .label("CPU")
+                .value(format!("{:.0}%", self.load * 100.0))
+                .detail("8 cores")
+                .progress(self.load)
+                .accent(Color::rgb(0x4c, 0xc2, 0xff))
+                .icon("assets/cpu.svg"),
+        )
+    }
+}
 # fn main() {}
 ```
+
+`face` returns `None` by default, which leaves the key alone. A face made
+on another thread goes out with `key.set_face(face)` instead (see
+[Timers and threads](timers.md)); use one way or the other for a key,
+because the next event asks `face` again.
 
 Every part is optional. Builders on [`Face`]:
 
@@ -101,7 +126,7 @@ When a face is not enough, send an image:
 # #[derive(Default)] struct Art;
 # #[derive(Clone, Default, Serialize, Deserialize)] struct Empty {}
 # impl Action for Art {
-#     const ID: &'static str = "com.example.art.show"; const NAME: &'static str = "Art";
+#     const ID: &'static str = "show"; const NAME: &'static str = "Art";
 #     type Settings = Empty;
 fn key_appear(&mut self, key: &Key<Self>) {
     let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
@@ -142,7 +167,7 @@ editor shows the first one.
 struct Light;
 
 impl Action for Light {
-    const ID: &'static str = "com.example.home.light";
+    const ID: &'static str = "light";
     const NAME: &'static str = "Light";
     type Settings = Empty;
 

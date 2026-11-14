@@ -7,7 +7,6 @@ use deckly_sdk::prelude::*;
 
 /// What the user sets for each key. Deckly saves it in the profile.
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
 struct WaveSettings {
     name: String,
 }
@@ -19,7 +18,7 @@ struct Wave {
 }
 
 impl Action for Wave {
-    const ID: &'static str = "com.example.hello.wave";
+    const ID: &'static str = "wave";
     const NAME: &'static str = "Wave";
     type Settings = WaveSettings;
 
@@ -28,44 +27,26 @@ impl Action for Wave {
         form.text("name", "Name").placeholder("World");
     }
 
-    fn key_appear(&mut self, key: &Key<Self>) {
-        self.draw(key);
-    }
-
-    fn key_down(&mut self, key: &Key<Self>) {
+    fn key_down(&mut self, _key: &Key<Self>) {
         self.presses += 1;
-        self.draw(key);
     }
 
-    fn settings_changed(&mut self, key: &Key<Self>) {
-        self.draw(key);
-    }
-}
-
-impl Wave {
-    fn draw(&self, key: &Key<Self>) {
+    // What the key shows. Deckly draws it again whenever it changes.
+    fn face(&self, key: &Key<Self>) -> Option<Face> {
         let mut name = key.settings().name;
         if name.is_empty() {
             name = "World".into();
         }
-        key.set_face(
+        Some(
             Face::new()
                 .label(format!("Hello, {name}"))
                 .value(self.presses.to_string())
                 .detail("presses"),
-        );
+        )
     }
 }
 
-fn plugin() -> Plugin {
-    Plugin::new("com.example.hello", "Hello")
-        .version(env!("CARGO_PKG_VERSION"))
-        .action::<Wave>()
-}
-
-fn main() -> deckly_sdk::Result<()> {
-    plugin().run()
-}
+deckly_sdk::plugin!("com.example.hello", "Hello", [Wave]);
 // ANCHOR_END: plugin
 
 // ANCHOR: tests

@@ -61,13 +61,14 @@ first and do the slow work later, on a thread.
 
 **The key shows only the action's icon.**
 Without a connected device, keys get no events, so faces are not drawn. With
-a device, check that `key_appear` draws something.
+a device, check that the action's `face` returns `Some`, or that
+`key_appear` draws something.
 
-**The settings go back to their defaults.**
-The stored settings do not fit your settings type; the log has a line
-`settings of key … do not fit …`. Add `#[serde(default)]` to the type and
-check the field types against the form (an `integer` range for whole
-numbers).
+**A setting goes back to its default.**
+The stored value does not fit the field's type; the log has a line
+`settings of key …: <field> did not fit; using the default`. Check the
+field types against the form (an `integer` range for whole numbers). The
+other fields keep their values.
 
 **Running the program by hand prints "standard input closed before hello".**
 That is expected: a plugin is started by Deckly. Run it with `--describe`

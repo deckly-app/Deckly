@@ -83,7 +83,6 @@ A settings type for it:
 use deckly_sdk::prelude::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 struct Hotkey {
     key: String,
     ctrl: bool,
@@ -93,7 +92,6 @@ struct Hotkey {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
 struct ShortcutSettings {
     shortcut: Hotkey,
 }

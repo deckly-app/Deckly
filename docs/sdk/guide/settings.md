@@ -10,7 +10,6 @@ backups. The plugin sees them as a Rust type.
 use deckly_sdk::prelude::*;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
 struct TimerSettings {
     minutes: u32,
     sound: bool,
@@ -26,18 +25,21 @@ impl Default for TimerSettings {
 # fn main() {}
 ```
 
-Rules that keep settings working across versions:
+A new key starts with `Default`. The SDK reads saved settings over
+`Default`, which keeps them working across versions:
 
-- **Use `#[serde(default)]`** on the type. A new key starts with an empty
-  object, and settings saved by an older version of the plugin miss the
-  fields added since. With `serde(default)` the missing fields take their
-  defaults.
-- Settings that do not fit the type at all read as `Default`, with a line
-  in the plugin's log. They are not lost: Deckly keeps the stored object
-  until the plugin saves new settings.
+- A field the saved settings lack (a key saved by an older version of the
+  plugin, a field added since) takes its default value. No
+  `#[serde(default)]` is needed.
+- A field whose saved value does not fit its type (text where a number
+  belongs) takes its default value too, with a line in the plugin's log;
+  the other fields keep their saved values. Nothing is lost: Deckly keeps
+  the stored object until the plugin saves new settings.
 - They must serialize to a JSON object (a struct or a map), at most
   64 KiB.
-- Give the type a field for every field of the [form](forms.md). Storing
+- Give the type a field for every field of the [form](forms.md);
+  `Plugin::check` (run by the test harness and `--describe`) finds a form
+  field whose key is not a field of the type. Storing
   settings writes the whole object, so a property the type lacks is
   dropped. To keep properties you do not read, add a catch-all:
   `#[serde(flatten)] rest: serde_json::Map<String, serde_json::Value>`.
@@ -48,11 +50,11 @@ Rules that keep settings working across versions:
 
 ```rust
 # use deckly_sdk::prelude::*;
-# #[derive(Clone, Default, Serialize, Deserialize)] #[serde(default)]
+# #[derive(Clone, Default, Serialize, Deserialize)]
 # struct TimerSettings { minutes: u32, sound: bool, finished_runs: u64 }
 # #[derive(Default)] struct Timer;
 # impl Action for Timer {
-#     const ID: &'static str = "com.example.timer.run"; const NAME: &'static str = "Timer";
+#     const ID: &'static str = "run"; const NAME: &'static str = "Timer";
 #     type Settings = TimerSettings;
 fn key_down(&mut self, key: &Key<Self>) {
     // A copy of the current settings.

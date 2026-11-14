@@ -64,10 +64,14 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Starts the plugin and completes the handshake. Panics when the
-    /// plugin does not answer: this is for tests.
-    #[allow(clippy::expect_used)]
+    /// Starts the plugin and completes the handshake. Panics when
+    /// [`Plugin::check`] finds a mistake or the plugin does not answer:
+    /// this is for tests.
+    #[allow(clippy::expect_used, clippy::panic)]
     pub fn start(plugin: Plugin) -> Self {
+        if let Err(e) = plugin.check() {
+            panic!("{e}");
+        }
         let manifest = plugin.manifest();
         let (plugin_in, to_plugin) = std::io::pipe().expect("a pipe");
         let (from_plugin, plugin_out) = std::io::pipe().expect("a pipe");
@@ -145,9 +149,9 @@ impl Harness {
         &self.manifest
     }
 
-    /// The settings form of an action.
+    /// The settings form of an action, by its full or short id.
     pub fn form(&self, action: &str) -> Option<&Form> {
-        self.manifest.action(action)?.form.as_ref()
+        self.manifest.action(&self.action_id(action))?.form.as_ref()
     }
 
     /// The plugin-wide settings form.
@@ -160,7 +164,7 @@ impl Harness {
     pub fn place(&mut self, context: &str, action: &str, settings: Value) {
         let key = KeyInfo {
             context: context.into(),
-            action: action.into(),
+            action: self.action_id(action),
             device: String::new(),
             column: 0,
             row: 0,
@@ -271,12 +275,19 @@ impl Harness {
         })
     }
 
-    /// Shows a key with `action` and its settings (a JSON object).
+    /// The full id of an action: a short id (`Wave::ID`, `"wave"`) gets
+    /// the plugin id in front, as in the manifest.
+    pub fn action_id(&self, action: &str) -> String {
+        crate::full_action_id(&self.manifest.id, action)
+    }
+
+    /// Shows a key with `action` and its settings (a JSON object). The
+    /// action may be given by its short id.
     pub fn appear(&mut self, context: &str, action: &str, settings: Value) {
         let index = self.keys.len() as u8;
         let key = KeyInfo {
             context: context.into(),
-            action: action.into(),
+            action: self.action_id(action),
             device: "test-device".into(),
             column: index % 5,
             row: index / 5,

@@ -14,7 +14,6 @@ use serde_json::json;
 use std::time::Duration;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
 struct CountSettings {
     count: u64,
 }
@@ -23,7 +22,7 @@ struct CountSettings {
 struct Count;
 
 impl Action for Count {
-    const ID: &'static str = "com.example.count.count";
+    const ID: &'static str = "count";
     const NAME: &'static str = "Count";
     type Settings = CountSettings;
 
@@ -55,15 +54,20 @@ fn presses_are_counted_and_saved() {
 ```
 
 A plugin is easiest to test when a function builds the `Plugin` (like
-`plugin()` above) and `main` only calls `plugin().run()`. Put the plugin in
-`src/lib.rs` and keep `src/main.rs` to those lines if you want tests in
-`tests/`.
+`plugin()` above) and `main` only calls `plugin().run()`; the `plugin!`
+macro writes both. Put the plugin in `src/lib.rs` and keep `src/main.rs` to
+those lines if you want tests in `tests/`.
+
+`Harness::start` first runs `Plugin::check`, which `--describe` and Deckly
+also apply: a manifest Deckly would refuse, an action id that does not start
+with the plugin id, or a form field that is not a field of the action's
+settings fails the test right away.
 
 ## Driving the plugin
 
 | Harness method | Plays |
 | --- | --- |
-| `appear(key, action, settings)` | A key with that action is shown. |
+| `appear(key, action, settings)` | A key with that action (`Count::ID`, short or full) is shown. |
 | `disappear(key)` | The key goes away. |
 | `press(key)`, `key_down(key)`, `key_up(key)` | Pressing the key. |
 | `change_settings(key, settings)` | The user edits the key's settings. |
