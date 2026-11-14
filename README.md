@@ -372,6 +372,10 @@ Plugins live in Deckly's config folder under `plugins`, their logs under
 message to and from a plugin into its log, shows HTML plugin pages, and
 enables the web view's developer tools.
 
+To write a plugin of your own in Rust, see the
+[Deckly Plugin SDK docs](https://deckly-app.github.io/Deckly/)
+(sources in [`docs/sdk`](docs/sdk/README.md)).
+
 ## Standby screen
 
 The standby screen is the picture a device shows while it has power but no

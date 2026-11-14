@@ -41,9 +41,11 @@ Crates form layers. A crate may depend only on crates in lower layers.
 | L2 | `deckly-sdk` | What a Deckly plugin author uses: actions, settings, settings forms, global settings, keys, faces, the run loop, a test harness. Depends only on `deckly-plugin-protocol`, `serde` and `serde_json`: never on `deckly-core`, `deckly-device`, the host or the app. Own version (`0.1.0`). |
 | L3 | `deckly` | The desktop app: egui UI, key image rendering, built-in action execution, runtime wiring. |
 | helper | `deckly-web` | Separate process with the system web view for HTML plugins and Property Inspectors. Never linked into the app. |
-| example | `examples/counter-plugin`, `examples/transport-bench` | An example Deckly plugin with its tests, and the transport measurements. Not shipped in releases. |
+| example | `examples/hello-deckly`, `examples/counter-plugin`, `examples/transport-bench` | The plugin from the SDK book's Getting started page, a fuller example Deckly plugin with its tests, and the transport measurements. Not shipped in releases. |
 
 Planned, add when the work starts (not before): `deckly-cli` (headless control and inspection).
+
+The plugin SDK docs for plugin authors are the mdBook in `docs/sdk`, published on GitHub Pages; `cargo dev book` builds them. A change to the SDK's API updates those pages in the same branch. `docs/plugin-sdk.md` is the design record for Deckly contributors, not user docs.
 
 ## 4. Golden rules
 

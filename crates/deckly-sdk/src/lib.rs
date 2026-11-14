@@ -333,3 +333,38 @@ impl Plugin {
         run::run(self, input, output, false)
     }
 }
+
+/// The pages of the SDK book (`docs/sdk`), so `cargo test` compiles and runs
+/// their Rust examples against this crate. `cargo test -p xtask` checks that
+/// this list stays complete.
+#[cfg(doctest)]
+mod book {
+    macro_rules! pages {
+        ($($name:ident = $path:literal),* $(,)?) => {$(
+            #[doc = include_str!(concat!("../../../docs/sdk/", $path))]
+            struct $name;
+        )*};
+    }
+
+    pages! {
+        Introduction = "README.md",
+        GettingStarted = "getting-started.md",
+        Actions = "guide/actions.md",
+        Drawing = "guide/drawing.md",
+        Timers = "guide/timers.md",
+        Settings = "guide/settings.md",
+        Forms = "guide/forms.md",
+        GlobalSettings = "guide/global-settings.md",
+        Testing = "guide/testing.md",
+        Packaging = "guide/packaging.md",
+        Troubleshooting = "guide/troubleshooting.md",
+        Manifest = "reference/manifest.md",
+        FormFields = "reference/form-fields.md",
+        Limits = "reference/limits.md",
+        Folders = "reference/folders.md",
+        Protocol = "reference/protocol.md",
+        Api = "reference/api.md",
+        StreamDeckPlugins = "stream-deck-plugins.md",
+        About = "about.md",
+    }
+}
