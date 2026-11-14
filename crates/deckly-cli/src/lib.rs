@@ -20,7 +20,9 @@ mod link;
 mod log;
 mod pack;
 mod project;
+mod prompt;
 mod templates;
+mod term;
 mod validate;
 
 use args::Command;

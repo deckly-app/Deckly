@@ -11,13 +11,11 @@
 use crate::args::{CreateArgs, Example, License, Sdk};
 use crate::config::{config_dir, plugins_dir};
 use crate::project::{Project, cargo};
+use crate::prompt::{self, PromptError};
 use crate::templates::{self, Answers};
+use crate::term;
 use deckly_plugin_protocol::limits::{MAX_DESCRIPTION_CHARS, MAX_ID_BYTES, MAX_NAME_CHARS};
 use deckly_plugin_protocol::valid_id;
-use inquire::validator::Validation;
-use inquire::{Confirm, InquireError, Select, Text};
-use std::fmt;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -25,8 +23,7 @@ use std::process::{Command, Stdio};
 const MAX_NAME: usize = 64;
 
 pub fn run(args: CreateArgs) -> Result<(), String> {
-    let interactive =
-        !args.yes && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let interactive = !args.yes && term::is_interactive();
     let parent = match &args.dir {
         Some(dir) => dir.clone(),
         None => {
@@ -111,61 +108,58 @@ fn unattended(args: &CreateArgs, sdk: Sdk) -> Result<Answers, String> {
 
 /// Asks what the flags did not give.
 fn ask(args: &CreateArgs, sdk: Sdk) -> Result<Answers, String> {
-    println!("A new Deckly plugin. Enter takes the suggestion; Esc or Ctrl+C stops.\n");
+    term::welcome();
     let author = match &args.author {
         Some(a) => a.clone(),
-        None => prompt(
-            Text::new("Author:")
-                .with_default(&default_author())
-                .with_validator(|s: &str| valid(check_author(s))),
-        )?,
+        None => answer(prompt::text(
+            "Author:",
+            &default_author(),
+            None,
+            &check_author,
+        ))?,
     };
     let name = match &args.name {
         Some(n) => n.clone(),
-        None => prompt(
-            Text::new("Plugin name:")
-                .with_help_message("Shown in Deckly's action list")
-                .with_validator(|s: &str| {
-                    valid(check_name(s).and_then(|()| crate_name(s).map(drop)))
-                }),
-        )?,
+        None => answer(prompt::text(
+            "Plugin name:",
+            "",
+            Some("Shown in Deckly's action list"),
+            &|s| check_name(s).and_then(|()| crate_name(s).map(drop)),
+        ))?,
     };
     check_name(&name)?;
     let id = match &args.id {
         Some(id) => id.clone(),
-        None => prompt(
-            Text::new("Plugin id:")
-                .with_default(&default_id(&author, &name))
-                .with_help_message("Reverse-DNS; never change it after the first release")
-                .with_validator(|s: &str| valid(check_id(s))),
-        )?,
+        None => answer(prompt::text(
+            "Plugin id:",
+            &default_id(&author, &name),
+            Some("Reverse-DNS; never change it after the first release"),
+            &check_id,
+        ))?,
     };
     let description = match &args.description {
         Some(d) => d.clone(),
-        None => prompt(
-            Text::new("Description:")
-                .with_default(&default_description(&name))
-                .with_validator(|s: &str| valid(check_description(s))),
-        )?,
+        None => answer(prompt::text(
+            "Description:",
+            &default_description(&name),
+            None,
+            &check_description,
+        ))?,
     };
     let example = match args.example {
         Some(e) => e,
         None => {
-            let options: Vec<Shown<Example>> = Example::ALL
-                .iter()
-                .map(|e| Shown(*e, e.describe()))
-                .collect();
-            prompt(Select::new("Example:", options))?.0
+            let options: Vec<(Example, &str)> =
+                Example::ALL.iter().map(|e| (*e, e.describe())).collect();
+            answer(prompt::select("Example:", &options))?
         }
     };
     let license = match args.license {
         Some(l) => l,
         None => {
-            let options: Vec<Shown<License>> = License::ALL
-                .iter()
-                .map(|l| Shown(*l, l.describe()))
-                .collect();
-            prompt(Select::new("Licence:", options))?.0
+            let options: Vec<(License, &str)> =
+                License::ALL.iter().map(|l| (*l, l.describe())).collect();
+            answer(prompt::select("Licence:", &options))?
         }
     };
     Ok(Answers {
@@ -182,74 +176,28 @@ fn ask(args: &CreateArgs, sdk: Sdk) -> Result<Answers, String> {
     })
 }
 
-/// A choice in a list, shown by its description.
-#[derive(Clone)]
-struct Shown<T>(T, &'static str);
-
-impl<T> fmt::Display for Shown<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.1)
-    }
-}
-
 /// A prompt's answer; cancelling stops the tool with nothing written.
-trait Prompt {
-    type Out;
-    fn ask(self) -> Result<Self::Out, InquireError>;
-}
-
-impl Prompt for Text<'_, '_> {
-    type Out = String;
-    fn ask(self) -> Result<String, InquireError> {
-        self.prompt()
-    }
-}
-
-impl<T: Clone + fmt::Display> Prompt for Select<'_, T> {
-    type Out = T;
-    fn ask(self) -> Result<T, InquireError> {
-        self.prompt()
-    }
-}
-
-impl Prompt for Confirm<'_> {
-    type Out = bool;
-    fn ask(self) -> Result<bool, InquireError> {
-        self.prompt()
-    }
-}
-
-fn prompt<P: Prompt>(p: P) -> Result<P::Out, String> {
-    p.ask().map_err(|e| match e {
-        InquireError::OperationCanceled | InquireError::OperationInterrupted => {
-            "stopped; nothing was written".to_owned()
-        }
-        other => format!("cannot ask: {other}"),
-    })
-}
-
-fn valid(check: Result<(), String>) -> Result<Validation, inquire::CustomUserError> {
-    Ok(match check {
-        Ok(()) => Validation::Valid,
-        Err(e) => Validation::Invalid(e.into()),
-    })
+fn answer<T>(result: Result<T, PromptError>) -> Result<T, String> {
+    result.map_err(|e| e.to_string())
 }
 
 fn confirm(a: &Answers, folder: &Path) -> Result<bool, String> {
     println!();
-    println!("  Folder       {}", folder.display());
-    println!("  Package      {}", a.crate_name);
-    println!("  Plugin id    {}", a.id);
-    println!("  Example      {}", a.example.describe());
-    println!("  Licence      {}", a.license.describe());
+    let row =
+        |label: &str, value: String| println!("  {}  {value}", term::dim(format!("{label:<10}")));
+    row("Folder", folder.display().to_string());
+    row("Package", a.crate_name.clone());
+    row("Plugin id", a.id.clone());
+    row("Example", a.example.describe().to_owned());
+    row("Licence", a.license.describe().to_owned());
     let sdk = match &a.sdk {
         Sdk::CratesIo => format!("deckly-sdk {} from crates.io", crate::SDK_VERSION),
         Sdk::Path(p) => format!("deckly-sdk from {}", p.display()),
         Sdk::Git { url, .. } => format!("deckly-sdk from {url}"),
     };
-    println!("  SDK          {sdk}");
+    row("SDK", sdk);
     println!();
-    prompt(Confirm::new("Create it?").with_default(true))
+    answer(prompt::confirm("Create it?", true))
 }
 
 fn check_name(name: &str) -> Result<(), String> {
