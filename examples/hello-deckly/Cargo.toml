@@ -1,14 +1,14 @@
 [package]
 name = "hello-deckly"
 description = "The plugin from the SDK book's Getting started page"
-version = "0.1.0"
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
 
 # A plugin outside this repository uses instead:
-#   deckly-sdk = "0.1"
+#   deckly-sdk = "0.0.1"
 #   serde = { version = "1", features = ["derive"] }
 [dependencies]
 deckly-sdk.workspace = true

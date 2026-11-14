@@ -96,7 +96,7 @@ Host:
   device shows it. In the editor without a device the key shows the action's
   icon from the manifest, not its face.
 
-SDK (`deckly-sdk` 0.1.0), where it departs from the sketch below:
+SDK (`deckly-sdk` 0.0.1), where it departs from the sketch below:
 
 - `Face::new().value("3").label("Count")` and `key.set_face(face)`; the
   sketch's `Face::value(...)` and `key.face(...)` clash as builder and
@@ -475,7 +475,7 @@ releases and version. To keep many small repositories alike:
   pushed.
 - A plugin depends on `deckly-sdk` from crates.io, where `deckly-sdk` and
   `deckly-plugin-protocol` are published (each with its own version, from
-  0.1.0).
+  0.0.1; see "Versions" in AGENTS.md).
 
 ### Marketplace
 

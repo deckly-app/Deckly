@@ -42,7 +42,7 @@ fn main() -> deckly_sdk::Result<()> {
 - [`llms-full.txt`](https://deckly-app.github.io/Deckly/llms-full.txt): the
   whole book in one file, for AI agents.
 
-Version 0.1 is a preview: the API may still change between 0.x versions.
+Versions 0.0.x are previews: the API may still change with each release.
 
 Deckly is an independent project and is not made, approved or supported by
 Elgato or Corsair. Licensed under MIT.

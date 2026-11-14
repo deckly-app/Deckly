@@ -191,7 +191,7 @@ impl Plugin {
             manifest: Manifest {
                 id: id.to_owned(),
                 name: name.to_owned(),
-                version: "0.1.0".to_owned(),
+                version: "0.0.1".to_owned(),
                 protocol: PROTOCOL,
                 sdk: SDK_VERSION.to_owned(),
                 ..Manifest::default()

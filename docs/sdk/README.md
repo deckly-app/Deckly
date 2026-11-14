@@ -38,7 +38,7 @@ fn main() -> deckly_sdk::Result<()> {
 }
 ```
 
-> **Preview.** The SDK is version 0.1 and its API may still change. Deckly
+> **Preview.** The SDK is at version 0.0.x and its API may still change. Deckly
 > plugins need a Deckly built from the `dev` branch until the next release
 > (see [Getting started](getting-started.md)).
 

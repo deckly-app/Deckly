@@ -8,14 +8,14 @@ plugin folder. The SDK writes it: run the plugin program with
 {
   "id": "com.example.hello",
   "name": "Hello",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "author": "Ada Lovelace",
   "license": "MIT",
   "description": "Greets people.",
   "icon": "assets/plugin.svg",
   "category": "",
   "protocol": 1,
-  "sdk": "0.1.0",
+  "sdk": "0.0.1",
   "services": [],
   "programs": {
     "x86_64-unknown-linux-gnu": "hello-deckly"
@@ -43,7 +43,7 @@ plugin folder. The SDK writes it: run the plugin program with
 | --- | --- | --- |
 | `id` | `Plugin::new(id, _)` | Reverse-DNS id, also the folder name. Letters, digits, `.`, `-`, `_`; at most 128 bytes. Never change it after release. |
 | `name` | `Plugin::new(_, name)` | Shown in the Plugins tab. Required. |
-| `version` | `.version(..)` | The plugin's version; `0.1.0` if not set. |
+| `version` | `.version(..)` | The plugin's version; `0.0.1` if not set. |
 | `author` | `.author(..)` | Shown with the plugin. |
 | `license` | `.license(..)` | The plugin's licence, such as `MIT`. |
 | `description` | `.description(..)` | Up to 2000 characters. |

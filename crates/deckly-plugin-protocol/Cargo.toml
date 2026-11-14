@@ -2,7 +2,7 @@
 name = "deckly-plugin-protocol"
 description = "Messages, framing and limits shared by the Deckly plugin host and the Deckly plugin SDK"
 # Versioned on its own, not with the app: plugins depend on it.
-version = "0.1.0"
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
