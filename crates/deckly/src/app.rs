@@ -2296,9 +2296,15 @@ impl App {
         };
         let mut remove = false;
         let mut reset_folder_exit = false;
+        // The header, preview and form sit centred in the panel. Their width
+        // is known only once drawn, so this frame uses the last frame's.
+        let width_id = egui::Id::new("inspector-body-width");
+        let last_width = ui.ctx().data(|d| d.get_temp::<f32>(width_id));
+        let indent =
+            16.0 + last_width.map_or(0.0, |w| ((panel.width() - 32.0 - w) / 2.0).max(0.0).floor());
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            ui.add_space(16.0);
+            ui.add_space(indent);
             match &plugin {
                 Some(p) => {
                     let tex = p.icon.as_ref().map(|img| self.image_texture(ui.ctx(), img));
@@ -2334,8 +2340,10 @@ impl App {
         ui.add_space(8.0);
         let ppp = ui.ctx().pixels_per_point();
         let mut form = Rect::NOTHING;
+        let mut body_left = 0.0;
         ui.horizontal_top(|ui| {
-            ui.add_space(16.0);
+            ui.add_space(indent);
+            body_left = ui.cursor().left();
             // Key preview and image controls.
             ui.vertical(|ui| {
                 ui.set_width(110.0);
@@ -2471,6 +2479,11 @@ impl App {
                 .response
                 .rect;
         });
+        let width = (form.right() - body_left).max(0.0);
+        if last_width.is_none_or(|w| (w - width).abs() > 0.5) {
+            ui.ctx().data_mut(|d| d.insert_temp(width_id, width));
+            ui.ctx().request_repaint();
+        }
         if let Some(editor) = &mut self.image_editor {
             use crate::image_editor::Selection;
             match editor.show(ui.ctx(), &profile_id) {
