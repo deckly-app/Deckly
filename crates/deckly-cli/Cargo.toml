@@ -26,9 +26,12 @@ deckly-plugin-protocol.workspace = true
 serde_json.workspace = true
 # Arguments: seven commands do not need a bigger parser.
 lexopt = "0.3.2"
-# The wizard's prompts: arrow-key choices and live validation, no
-# full-screen interface.
-inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
+# The wizard's prompts are drawn by this crate's own small layer (src/prompt.rs)
+# on crossterm, which is already in the tree through the app's dependencies:
+# raw mode, key events and cursor moves on Linux, macOS and Windows.
+crossterm = "0.29.0"
+# Columns of text, so wide characters and the cursor line up.
+unicode-width = "0.2.2"
 # Rebuilds on save in `dev`: inotify, FSEvents and ReadDirectoryChangesW.
 notify = "8.2.0"
 # `.decklyPlugin` files are zip archives; already in the tree through the
