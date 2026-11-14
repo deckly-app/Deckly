@@ -12,7 +12,7 @@ Deckly runs two kinds of plugins side by side:
 
 ## Running an existing Stream Deck plugin
 
-You do not need to change it. Install it from the Plugins tab: **Install…**
+You do not need to change it. Install it from the Plugins tab: **Add File…**
 for a `.streamDeckPlugin` file or a zip that holds one, **Add Folder…** for
 a `.sdPlugin` folder. Deckly then:
 

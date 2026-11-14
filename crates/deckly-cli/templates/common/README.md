@@ -35,7 +35,7 @@ deckly-cli pack
 ```
 
 Makes one `.decklyPlugin` file in `target/deckly` for this system. Install
-it in Deckly with **Add Plugin File…** in the Plugins tab, or drop it on the
+it in Deckly with **Add File…** in the Plugins tab, or drop it on the
 window.
 
 ## Release

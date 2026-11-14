@@ -71,7 +71,8 @@ Host:
 
 - A Deckly plugin is a folder named by its id holding `deckly-plugin.json`,
   next to the `.sdPlugin` folders. Plain folders install and uninstall through
-  the existing install path; `.decklyPlugin` archives do not yet.
+  the existing install path, and so do `.decklyPlugin` archives (one `<id>/`
+  folder in a zip, made by `deckly-cli pack`).
 - The program is picked by target triple; when the exact triple is missing,
   one for the same processor and system is used (a `musl` build on a `gnu`
   system).
@@ -105,12 +106,14 @@ SDK (`deckly-sdk` 0.0.1), where it departs from the sketch below:
   own value; `key.stop_timer()` ends it. No closure, so the timer can use
   `&mut self` without locks.
 - `Action` needs `Default` (one value per key, made by the SDK) and
-  `Settings: Clone`. Settings that do not fit the type read as `Default` with
-  a line on standard error.
+  `Settings: Clone`. Saved settings are laid over the serialized `Default`
+  and read field by field: a missing field, or one that does not fit, keeps
+  its default and the others keep their values (`crates/deckly-sdk/src/settings.rs`).
 - Not yet in stage 1: `form()` and global settings in the API (both came
   with the settings forms, below), plugin-wide state, dials.
 - `--describe` names the running program for the current target only;
-  `deckly-cli pack` is meant to merge the targets.
+  `deckly-cli build` moves it to `bin/<target>/` and `pack --merge` joins
+  the targets.
 - `deckly_sdk::testing::Harness` plays the host over in-process pipes.
 
 Faces, as drawn by the app: a label at the top, an icon from the plugin
@@ -307,7 +310,7 @@ the action model do not learn about a second kind of plugin
 | --- | --- | --- |
 | `deckly-plugin-protocol` | Message types, framing and limits shared by host and SDK. Pure, no I/O. | `serde`, `serde_json` |
 | `deckly-sdk` | What a plugin author uses: actions, settings, key faces, host services, the run loop. | `deckly-plugin-protocol` |
-| `deckly-cli` | `new`, `dev`, `validate`, `pack`; later `publish` and headless control. | protocol, plugin host |
+| `deckly-cli` | `create`/`new`, `build`, `link`, `dev`, `validate`, `pack`, `log`; later `publish` and headless control. | protocol only |
 
 `deckly-plugin-host` gains a dependency on `deckly-plugin-protocol`. The SDK
 never depends on `deckly-core`, `deckly-device` or the app. The protocol and
@@ -511,7 +514,9 @@ Later, not in this work: `deckly://install/<id>` links and a website.
    "Settled by stage 1").
 3. Settings forms in egui. Built (see "Settled by the settings forms").
 4. Host services.
-5. `deckly-cli new`, `dev`, `validate`, `pack`.
+5. `deckly-cli new`, `dev`, `validate`, `pack`. Built (see
+   [plugin-cli.md](plugin-cli.md)), with the SDK's `face`, settings read
+   over `Default`, short action ids and `plugin!`.
 6. Timer and System stats, each in its own repository.
 7. OBS.
 8. Marketplace: registry repository and its CI, the index, the Plugins tab,
@@ -547,7 +552,6 @@ Checked on 2026-11-11: the name `deckly` is taken on GitHub; `deckly-app`,
   one by one.
 - The signature scheme for the registry index and how the public key in
   Deckly is replaced if the CI key has to change.
-- How `deckly-cli dev` reaches the running app.
 - The rule for the oldest Rust version the SDK supports.
 - Whether copying a key should give its secrets new references (and copy the
   values), and whether removing a key should remove its secrets from the

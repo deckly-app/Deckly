@@ -22,6 +22,7 @@
 - [Form fields](reference/form-fields.md)
 - [Limits](reference/limits.md)
 - [Plugin folders](reference/folders.md)
+- [deckly-cli](reference/cli.md)
 - [Protocol](reference/protocol.md)
 - [API reference (rustdoc)](reference/api.md)
 

@@ -1,10 +1,32 @@
 # Deckly plugin tool: proposal
 
-Status: proposal, 2026-11-14. Nothing here is built. Evidence and sources are
-in [the clean-room entry](clean-room/2026-11-14-stream-deck-cli.md); the SDK
-itself is in [plugin-sdk.md](plugin-sdk.md) and the author's book in
-`docs/sdk` (branch `docs/sdk-book`). Items that need the owner are marked
-**Decision**.
+Status: built on branch `feature/plugin-cli` (2026-11-14), with the owner's
+decisions of the same day: a separate `deckly-cli` (also `cargo-deckly`),
+prompts with `inquire`, all four SDK changes of section 7, the restart over
+the instance port with a token, run from a copy, the `dev-plugins.json`
+link file, `.decklyPlugin` files, Counter and Minimal templates, the CI
+release workflow, `notify` and `lexopt`. The plugin author's guide is
+`docs/sdk/getting-started.md` and `docs/sdk/reference/cli.md`; this page
+stays as the research and design record. Evidence and sources are in
+[the clean-room entry](clean-room/2026-11-14-stream-deck-cli.md).
+
+Where the build differs from the proposal below:
+
+- The wizard uses `inquire` (the owner's choice), not `dialoguer`.
+- The control line is `deckly-control 1 <token> reload <id>` or `rescan`
+  (`deckly_plugin_protocol::dev`); `reload` re-reads the link file and
+  restarts the plugin from a fresh copy.
+- `build` puts the program in `bin/<target>/` so packs of different systems
+  merge without clashing file names (Linux and macOS programs have the same
+  name).
+- The Plugins tab entry is **Add File…**: "Add Plugin File…" did not fit
+  beside **Add Folder…** in the side panel (seen in the running app).
+- Deckly's installers do not carry `deckly-cli` yet; install it with
+  `cargo install`.
+- `Plugin::check` also finds form fields that are not settings fields
+  (item 7 of section 7) and action ids outside the plugin id.
+- A project made inside another Cargo workspace gets its own `[workspace]`
+  table; without it Cargo refuses to build it.
 
 ## Install once, create anywhere
 

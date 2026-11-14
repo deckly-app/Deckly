@@ -60,7 +60,7 @@ it and keeps the rest of the app working.
 
 | You want to | Read |
 | --- | --- |
-| Make a first plugin, from `cargo new` to a key that reacts | [Getting started](getting-started.md) |
+| Make a first plugin, from `deckly-cli create` to a key that reacts | [Getting started](getting-started.md) |
 | Learn one topic: keys, faces, timers, settings, forms, tests | [Guides](guide/actions.md) |
 | Look up a field, a limit or a message | [Reference](reference/manifest.md) |
 | See every type and method | [API reference](reference/api.md) |

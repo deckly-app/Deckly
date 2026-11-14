@@ -1,12 +1,13 @@
 # Getting started
 
-In about ten minutes you build a plugin with one action, **Wave**: a key
-that greets a name the user types and counts its presses. Then you install
-it in Deckly and write a test for it.
+In about ten minutes you make a plugin with one action, run it in Deckly,
+change it while it runs, test it, and pack it into one file to share. The
+plugin tool, `deckly-cli`, does the setup; you write the action.
 
 ## 1. What you need
 
-- **Rust** 1.95 or newer, from [rustup.rs](https://rustup.rs).
+- **Rust** 1.95 or newer, from [rustup.rs](https://rustup.rs). A plugin is
+  a Rust program.
 - **Deckly** that runs Deckly plugins. Until the next release that is a
   build from the `dev` branch:
 
@@ -18,26 +19,83 @@ it in Deckly and write a test for it.
 
   The [Deckly README](https://github.com/deckly-app/Deckly#build) lists the
   system libraries the build needs on Linux.
-- A Stream Deck to see the key. Without one you can still build, install
-  and test the plugin (step 6).
+- A Stream Deck to press the key. Without one you can still build, run and
+  test the plugin; the editor shows the key.
 
-## 2. Make the crate
+## 2. Install the plugin tool
 
-```sh
-cargo new hello-deckly
-cd hello-deckly
-```
-
-Add the SDK, and `serde` for the settings type:
+Once, on Windows, Linux or macOS:
 
 ```sh
-cargo add deckly-sdk
-cargo add serde --features derive
+cargo install --git https://github.com/deckly-app/Deckly deckly-cli
 ```
 
-## 3. Write the action
+Once the crates are published on crates.io this becomes
+`cargo install deckly-cli`. The tool is also a Cargo subcommand: every
+`deckly-cli ...` below works as `cargo deckly ...` too.
 
-Replace `src/main.rs` with:
+## 3. Create the project
+
+In any folder:
+
+```sh
+deckly-cli create
+```
+
+It asks a few questions; Enter takes the suggestion each time:
+
+| Question | Suggested |
+| --- | --- |
+| Author | your `git config user.name` |
+| Plugin name | none: type one, such as `Hello` |
+| Plugin id | `com.<author>.<name>`; never change it after the first release |
+| Description | `<name> for Deckly.` |
+| Example | **Counter** (a key with settings, a face and tests) or **Minimal** (one key) |
+| Licence | MIT, Apache-2.0, both, or none |
+
+Then it shows a summary, and on yes it makes the folder `hello/`, builds
+the plugin, makes a git repository with a first commit, and links the
+plugin into Deckly:
+
+```text
+hello/
+├── Cargo.toml          deckly-sdk and serde; a lint that refuses println!
+├── src/main.rs         the plugin: the example action and its tests
+├── assets/             the plugin's icon and the action's icon (SVG)
+├── README.md           how to develop, test, pack and release it
+├── LICENSE
+└── .github/workflows/release.yml   packs it for every system on a tag
+```
+
+Every question is also a flag, and `--yes` takes the defaults without
+asking: `deckly-cli create Hello --yes --example minimal`. See
+`deckly-cli help create`, or [deckly-cli](reference/cli.md) for every
+command.
+
+## 4. Run it in Deckly
+
+```sh
+cd hello
+deckly-cli dev
+```
+
+`dev` builds the plugin and tells the running Deckly to start it. In
+Deckly, the Plugins tab now lists **Hello** with a **Development** mark.
+In the editor, find **Hello → Counter** in the action list, drag it onto a
+key and press the key: the count goes up.
+
+Leave `dev` running. Every time you save a file in `src/` or `assets/`, it
+builds again and Deckly restarts the plugin with the new build. A build
+that fails leaves the running plugin as it was; fix it and save again.
+Whatever the plugin writes with `eprintln!` shows up in the same terminal.
+
+If Deckly is not running, `dev` says so; the plugin starts with Deckly.
+
+## 5. Write your own action
+
+Replace `src/main.rs` with this action, **Wave**: a key that greets a name
+the user types and counts its presses. Keep the plugin id and name that
+`create` wrote on the last line, in place of `"com.example.hello", "Hello"`.
 
 <!-- example: ../../examples/hello-deckly/src/main.rs:plugin -->
 ```rust,no_run
@@ -87,6 +145,9 @@ impl Action for Wave {
 deckly_sdk::plugin!("com.example.hello", "Hello", [Wave]);
 ```
 
+Save it: `dev` builds it and Deckly restarts the plugin, now with **Wave**
+in the action list.
+
 What it does:
 
 - `Wave` is the action. `ID` is short: the SDK puts the plugin id in front,
@@ -99,53 +160,12 @@ What it does:
   label, a big value and a detail line, drawn by Deckly. The face goes to
   the key only when it changed.
 - `plugin!` names the plugin (its id and name) and its actions. It writes
-  `main`, and a `plugin()` function the tests in step 6 use. The version,
-  authors, licence and description come from `Cargo.toml`.
+  `main`, and a `plugin()` function the tests use. The version, authors,
+  licence and description come from `Cargo.toml`.
 
 Never use `println!` in a plugin: standard output is how the plugin talks to
-Deckly. Log with `eprintln!` instead.
-
-## 4. Build the plugin folder
-
-A plugin is a folder named by its id. It holds the program and
-`deckly-plugin.json`, the manifest. The program writes its own manifest when
-run with `--describe`.
-
-Linux and macOS:
-
-```sh
-cargo build --release
-mkdir -p dist/com.example.hello
-cp target/release/hello-deckly dist/com.example.hello/
-./target/release/hello-deckly --describe > dist/com.example.hello/deckly-plugin.json
-```
-
-Windows (PowerShell):
-
-```powershell
-cargo build --release
-New-Item -ItemType Directory -Force dist\com.example.hello | Out-Null
-Copy-Item target\release\hello-deckly.exe dist\com.example.hello\
-.\target\release\hello-deckly.exe --describe | Out-File -Encoding utf8 dist\com.example.hello\deckly-plugin.json
-```
-
-Add `/dist` to `.gitignore`.
-
-## 5. Install it and press the key
-
-1. In Deckly, open the **Plugins** tab and click **Add Folder…**.
-2. Pick `dist/com.example.hello`. Deckly copies it and starts the plugin;
-   **Hello** shows up in the list.
-3. Back in the editor, find **Hello → Wave** in the action list and drag it
-   onto a key.
-4. Press the key. The count goes up. Select the key and type a name in its
-   settings: the label changes.
-
-After a change to the code, repeat step 4 and **Add Folder…** again. Deckly
-replaces the installed copy and restarts the plugin.
-
-If nothing happens, right-click the plugin in the Plugins tab and choose
-**Open Log**. See [Logs and troubleshooting](guide/troubleshooting.md).
+Deckly. Log with `eprintln!` instead. The project's `Cargo.toml` makes
+`cargo clippy` refuse `println!`.
 
 ## 6. Test it without Deckly
 
@@ -181,13 +201,55 @@ mod tests {
 }
 ```
 
-`deck.face` waits for the next face the plugin draws on that key. The test
-uses `serde_json`, so add it for tests only, then run it:
+`deck.face` waits for the next face the plugin draws on that key. Run the
+tests, then let the tool check the plugin as Deckly will:
 
 ```sh
-cargo add --dev serde_json
 cargo test
+deckly-cli validate
 ```
+
+`validate` checks the plugin folder (the manifest, its icons and program)
+and starts the plugin once, as Deckly does: it must answer, and stop when
+Deckly closes its input. A `println!` or slow work before the plugin
+answers shows up here, with a plain explanation.
+
+## 7. Share it
+
+```sh
+deckly-cli pack
+```
+
+`pack` builds with optimizations, validates, and writes one file,
+`target/deckly/<plugin id>-<version>-<system>.decklyPlugin`. Anyone with
+Deckly installs it with **Add File…** in the Plugins tab, or by dropping it
+on the window.
+
+To ship one file for Windows, Linux and macOS, push a tag such as `v0.0.1`
+to GitHub: the workflow `create` wrote packs the plugin on each system,
+joins the files with `deckly-cli pack --merge`, and attaches the result to
+a GitHub release. See [Packaging and installing](guide/packaging.md).
+
+## What the tool does for you
+
+Nothing in `deckly-cli` is magic; by hand the steps are:
+
+1. `cargo build`.
+2. Make a plugin folder named by the plugin id, with the program in it and
+   `deckly-plugin.json`, which the program prints when run with
+   `--describe`. `deckly-cli build` makes it in `target/deckly/<plugin id>/`,
+   with the program under `bin/<system>/` and a copy of `assets/`.
+3. Show the folder to Deckly: **Add Folder…** in the Plugins tab copies it
+   and starts it. `deckly-cli link` instead lists it in Deckly's
+   `dev-plugins.json`, and Deckly runs it as a development plugin from a
+   fresh copy each time it restarts, so a new build can replace the program
+   while the old one runs.
+4. After each change, build again and restart the plugin. `deckly-cli dev`
+   watches the files and asks the running Deckly to restart the plugin over
+   the local port it already listens on.
+
+The [manifest](reference/manifest.md) and [plugin folders](reference/folders.md)
+references describe each part.
 
 ## Next
 

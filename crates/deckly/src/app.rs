@@ -781,9 +781,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(17.0);
             if ui
-                .button(format!("{}  Add Plugin File…", icon::DOWNLOAD_SIMPLE))
+                .button(format!("{}  Add File…", icon::DOWNLOAD_SIMPLE))
                 .on_hover_text(
-                    "Install a .decklyPlugin, .streamDeckPlugin or .zip file \
+                    "Add a plugin file: .decklyPlugin, .streamDeckPlugin or .zip \
                      (or drop one on the window)",
                 )
                 .clicked()

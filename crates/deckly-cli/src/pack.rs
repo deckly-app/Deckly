@@ -41,7 +41,7 @@ pub fn command(common: &Common, merge: Vec<PathBuf>, out: Option<PathBuf>) -> Re
         pack(&built.dir, &manifest.id, &out)
     })?;
     println!("The plugin file is {}", out.display());
-    println!("Install it in Deckly: Plugins tab, Add Plugin File… (or drop it on the window).");
+    println!("Install it in Deckly: Plugins tab, Add File… (or drop it on the window).");
     Ok(())
 }
 

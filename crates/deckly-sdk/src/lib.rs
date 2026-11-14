@@ -468,6 +468,7 @@ mod book {
         FormFields = "reference/form-fields.md",
         Limits = "reference/limits.md",
         Folders = "reference/folders.md",
+        Cli = "reference/cli.md",
         Protocol = "reference/protocol.md",
         Api = "reference/api.md",
         StreamDeckPlugins = "stream-deck-plugins.md",

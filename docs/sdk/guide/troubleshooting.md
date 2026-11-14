@@ -33,6 +33,17 @@ A panic in a handler ends the plugin, so it restarts and every key's state
 the form shows it as an error. Return errors instead of panicking, and show
 them with `key.show_alert()` and a line in the log.
 
+Run `deckly-cli log -f` in the project to follow the log in a terminal;
+`deckly-cli dev` prints it as it grows.
+
+## Check before Deckly
+
+`deckly-cli validate` builds the plugin, checks its folder as Deckly will,
+and starts it once as Deckly does. Most of the problems below show up there
+first, with a plain explanation: a `println!`, slow work before the plugin
+answers, a plugin that does not stop when its input closes, a missing icon,
+an action id outside the plugin id.
+
 ## Common problems
 
 **The plugin restarts again and again, and the log says "text was written
@@ -42,14 +53,24 @@ library that prints. Use `eprintln!` instead; `dbg!` is fine, it writes to
 standard error.
 
 **The plugin is not in the Plugins tab.**
-Deckly reads `deckly-plugin.json` when it starts and when a plugin is
-installed. Check that the folder holds `deckly-plugin.json`, that it was
-made with `--describe` from the current build, and install it again with
-**Add Folder…**.
+Deckly reads `deckly-plugin.json` when it starts, when a plugin is
+installed, and when `deckly-cli` asks it to. Run `deckly-cli dev` (or
+`deckly-cli link`) in the project. If `dev` says Deckly is not running
+although it is, the two use different settings folders: give `deckly-cli`
+the same `DECKLY_CONFIG_DIR` (or `--config-dir`) as Deckly.
+
+**The plugin shows "the linked folder … is missing".**
+A development plugin's folder is gone, for example after `cargo clean`.
+Run `deckly-cli dev` again, or `deckly-cli unlink`.
+
+**`deckly-cli dev` says Deckly cannot restart plugins on request.**
+That Deckly is older than the tool. Update Deckly, or press **Restart** in
+the plugin's menu after each build.
 
 **"has no program for x86_64-…"**
-The manifest lists no program for this system. Build on this system, or add
-the target to `programs`. See [Several systems](packaging.md#several-systems).
+The plugin file holds no program for this system. Pack it on this system
+too and join the files with `deckly-cli pack --merge`. See
+[Several systems](packaging.md#several-systems).
 
 **"needs a newer Deckly"**
 The plugin was built with an SDK that speaks a newer protocol than this
