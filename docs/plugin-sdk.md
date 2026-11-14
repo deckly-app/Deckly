@@ -208,8 +208,16 @@ App:
   recorder). The rows scroll when the form is taller than the panel.
 - Edits go into the key's settings in the profile copy the editor works on,
   so they are saved and undone like any other edit; the plugin gets
-  `settings` after each change. Undo and redo do not tell the plugin yet; it
-  hears of the restored settings when the key appears again.
+  `settings` after each change. Undo and redo send `settings` to the plugin
+  of every key whose settings they bring back, folder keys and Multi Action
+  members included.
+- When a plugin (or undo) changes a field while the user is typing in
+  another, the other field keeps its input; only input in the changed field
+  is dropped.
+- A dynamic choice takes an answer only from the plugin it asked and only
+  into the form that asked, so a plugin cannot fill another's lists by
+  guessing request numbers; the request and button messages carry the
+  settings as edited so far.
 - Input that fails its checks stays in the field with the message under it
   and is not saved; the last value that passed stays in the profile.
 - A plugin with a plugin-wide form gets a gear button in the Plugins tab
@@ -231,6 +239,19 @@ Secrets:
   read, does not overwrite the store.
 - A secret is stored when its field loses focus or Enter is pressed, not on
   every key.
+- The editor never waits for the store. A secret not read yet is read on a
+  thread of its own while the field shows a spinner. A new value goes into
+  the cache at once, so the plugin gets it with the next `settings`, and is
+  written on that thread; a write that fails takes the value back out of
+  the cache and shows "The secret was not stored" under the field. The
+  plugin's settings filter runs on the pipe's writer thread, and the plugin
+  thread lets go of the app's state while it stores a plugin's secrets.
+- The fallback file is read with a size bound and written through a
+  temporary file with an unpredictable name. At start, its secrets move to
+  the system's store only when every entry is one Deckly could have
+  written; otherwise the file stays in use.
+- With `DECKLY_PLUGIN_DEBUG`, a plugin's log names the kind of each message
+  it sent, not its contents, because settings carry secret values.
 - Stores: Credential Manager (generic credential `Deckly/<plugin>/<id>`, kept
   on this computer), the Keychain (generic password, service `Deckly`,
   account `<plugin>/<id>`) and the Secret Service (attributes `xdg:schema`
@@ -527,8 +548,6 @@ Checked on 2026-11-11: the name `deckly` is taken on GitHub; `deckly-app`,
   Deckly is replaced if the CI key has to change.
 - How `deckly-cli dev` reaches the running app.
 - The rule for the oldest Rust version the SDK supports.
-- Whether undo and redo should send the restored settings to a Deckly plugin
-  right away.
 - Whether copying a key should give its secrets new references (and copy the
   values), and whether removing a key should remove its secrets from the
   store.
