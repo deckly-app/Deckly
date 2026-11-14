@@ -5,6 +5,7 @@ members = [
     "xtask",
     "crates/deckly",
     "crates/deckly-core",
+    "crates/deckly-cli",
     "crates/deckly-device",
     "crates/deckly-plugin-host",
     "crates/deckly-plugin-protocol",

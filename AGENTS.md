@@ -41,9 +41,10 @@ Crates form layers. A crate may depend only on crates in lower layers.
 | L2 | `deckly-sdk` | What a Deckly plugin author uses: actions, settings, settings forms, global settings, keys, faces, the run loop, a test harness. Depends only on `deckly-plugin-protocol`, `serde` and `serde_json`: never on `deckly-core`, `deckly-device`, the host or the app. Own version (`0.0.x`). |
 | L3 | `deckly` | The desktop app: egui UI, key image rendering, built-in action execution, runtime wiring. |
 | helper | `deckly-web` | Separate process with the system web view for HTML plugins and Property Inspectors. Never linked into the app. |
+| tool | `deckly-cli` | The plugin tool for plugin authors: `create` (a new project from templates), `build`, `link`/`unlink`/`list`, `dev`, `validate`, `pack`, `log`. Also installed as `cargo-deckly`. Depends only on `deckly-plugin-protocol` (L1), never on the app, the host or the SDK; runs `cargo` and `git` as commands. Own version (`0.0.x`). |
 | example | `examples/hello-deckly`, `examples/counter-plugin`, `examples/transport-bench` | The plugin from the SDK book's Getting started page, a fuller example Deckly plugin with its tests, and the transport measurements. Not shipped in releases. |
 
-Planned, add when the work starts (not before): `deckly-cli` (headless control and inspection).
+Planned, add when the work starts (not before): headless control and inspection of Deckly, as more subcommands of `deckly-cli`.
 
 The plugin SDK docs for plugin authors are the mdBook in `docs/sdk`, published on GitHub Pages; `cargo dev book` builds them. A change to the SDK's API updates those pages in the same branch. `docs/plugin-sdk.md` is the design record for Deckly contributors, not user docs.
 
