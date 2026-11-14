@@ -781,20 +781,24 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(17.0);
             if ui
-                .button(format!("{}  Install…", icon::DOWNLOAD_SIMPLE))
+                .button(format!("{}  Add Plugin File…", icon::DOWNLOAD_SIMPLE))
                 .on_hover_text(
-                    "Install a .streamDeckPlugin or .zip file (or drop one on the window)",
+                    "Install a .decklyPlugin, .streamDeckPlugin or .zip file \
+                     (or drop one on the window)",
                 )
                 .clicked()
                 && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Plugin", &["streamDeckPlugin", "zip"])
+                    .add_filter("Plugin", &["decklyPlugin", "streamDeckPlugin", "zip"])
                     .pick_file()
             {
                 self.install(vec![path]);
             }
             if ui
                 .button(format!("{}  Add Folder…", icon::FOLDER_PLUS))
-                .on_hover_text("Install a <plugin id>.sdPlugin folder, or a folder holding one")
+                .on_hover_text(
+                    "Install a Deckly plugin folder, a <plugin id>.sdPlugin folder, \
+                     or a folder holding one",
+                )
                 .clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_folder()
             {
@@ -874,11 +878,14 @@ impl App {
             TEXT,
         );
         let official_only = p.official_only && !matches!(p.status, Status::Failed(_));
-        let (status, color) = if official_only {
+        let (mut status, color) = if official_only {
             (OFFICIAL_ONLY.to_owned(), WARNING)
         } else {
             status_text(&p.status)
         };
+        if p.dev_source.is_some() {
+            status = format!("Development · {status}");
+        }
         ui.painter().text(
             pos2(x, rect.top() + 35.0),
             Align2::LEFT_CENTER,
@@ -886,12 +893,20 @@ impl App {
             font(11.0),
             color,
         );
-        let resp = resp.on_hover_text(match &p.status {
+        let mut hover = match &p.status {
             _ if official_only => OFFICIAL_ONLY_WHY.to_owned(),
             Status::Failed(why) | Status::Restarting(why) => why.clone(),
             _ if p.author.is_empty() => p.id.clone(),
             _ => format!("{}\nby {}", p.id, p.author),
-        });
+        };
+        if let Some(source) = &p.dev_source {
+            hover.push_str(&format!(
+                "\n\nDevelopment plugin, linked from\n{}\nIt restarts from a fresh copy \
+                 after each build of deckly-cli dev.",
+                source.display()
+            ));
+        }
+        let resp = resp.on_hover_text(hover);
         let log = host.logs_dir().join(format!("{}.log", p.id));
         let mut settings = false;
         if p.form.is_some() {
@@ -936,11 +951,31 @@ impl App {
                 .button(format!("{}  Open Folder", icon::FOLDER_OPEN))
                 .clicked()
             {
-                open_path(&self.state, &p.dir.to_string_lossy());
+                // A development plugin's own folder, not the copy it runs.
+                let dir = p.dev_source.as_ref().unwrap_or(&p.dir);
+                open_path(&self.state, &dir.to_string_lossy());
                 ui.close();
             }
             ui.separator();
-            if ui.button(format!("{}  Uninstall", icon::TRASH)).clicked() {
+            if p.dev_source.is_some() {
+                if ui
+                    .button(format!("{}  Unlink", icon::LINK_BREAK))
+                    .on_hover_text("Stop running the plugin from its project folder")
+                    .clicked()
+                {
+                    let host = host.clone();
+                    let state = self.state.clone();
+                    let (id, name) = (p.id.clone(), p.name.clone());
+                    std::thread::spawn(move || {
+                        let text = match host.unlink(&id) {
+                            Ok(()) => format!("{name} was unlinked"),
+                            Err(e) => format!("Cannot unlink {name}: {e}"),
+                        };
+                        runtime::lock(&state).notify(text);
+                    });
+                    ui.close();
+                }
+            } else if ui.button(format!("{}  Uninstall", icon::TRASH)).clicked() {
                 let host = host.clone();
                 let state = self.state.clone();
                 let (id, name) = (p.id.clone(), p.name.clone());
@@ -3849,6 +3884,7 @@ impl eframe::App for App {
                 .filter(|p| {
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
                     p.is_dir()
+                        || ext.eq_ignore_ascii_case("decklyPlugin")
                         || ext.eq_ignore_ascii_case("streamDeckPlugin")
                         || ext.eq_ignore_ascii_case("zip")
                 })

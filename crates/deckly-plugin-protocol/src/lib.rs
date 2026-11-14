@@ -9,6 +9,7 @@
 //!
 //! Pure: no processes, pipes or threads. Design notes: docs/plugin-sdk.md.
 
+pub mod dev;
 pub mod form;
 pub mod frame;
 pub mod limits;
