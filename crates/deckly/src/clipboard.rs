@@ -219,6 +219,10 @@ mod tests {
             align: TitleAlign::Top,
             ..Default::default()
         });
+        key.protect = Some(deckly_core::Protection::Confirm {
+            ms: 5_000,
+            shuffle: true,
+        });
         profile.pages[0].keys.insert(3, key);
         profile
     }
