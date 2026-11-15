@@ -8,6 +8,7 @@ use crate::actions;
 use crate::animation::{self, Animation};
 use crate::fonts::{self, Face};
 use crate::plugins::{self, Mark, Overlay, PageTile, ShownFace};
+use crate::protect::Look;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
 use deckly_core::{
     DeviceModel, FeedbackMarks, ImageFormat, KeyConfig, KeyPress, MarkStyle, Orientation,
@@ -25,6 +26,10 @@ const EMPTY: Rgba<u8> = Rgba([0, 0, 0, 255]);
 const ICON_BACKGROUND: Rgba<u8> = Rgba([0, 0, 0, 255]);
 const ICON_COLOR: [u8; 3] = [0xE6, 0xE7, 0xEA];
 const RING_TRACK: [u8; 3] = [0x48, 0x4A, 0x50];
+/// A protected key waiting for its gesture.
+const GUARD_COLOR: [u8; 3] = [0xF5, 0xA5, 0x24];
+const YES_COLOR: [u8; 3] = [0x3D, 0xD6, 0x8C];
+const NO_COLOR: [u8; 3] = [0xF2, 0x5C, 0x54];
 const MAX_IMAGE_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TITLE_LINES: usize = 5;
 /// Wallpapers are kept at most this large: more than any device panel or
@@ -53,6 +58,18 @@ pub struct Live {
     pub exit: Option<u8>,
     /// The frame an animated key image shows; see [`Renderer::animate`].
     pub frame: u32,
+    /// A protected key's gesture in progress.
+    pub guard: Option<Look>,
+}
+
+/// A key of a confirmation screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Answer {
+    Yes,
+    No,
+    /// With how much of the time before the screen closes is left, in
+    /// percent.
+    Back(u8),
 }
 
 impl Default for Live {
@@ -62,6 +79,7 @@ impl Default for Live {
             pressed: false,
             exit: None,
             frame: 0,
+            guard: None,
         }
     }
 }
@@ -255,7 +273,89 @@ impl Renderer {
             0
         };
         composite_layer(&mut out, &img, offset);
+        if let Some(look) = live.guard {
+            self.draw_guard(&mut out, look);
+        }
         out
+    }
+
+    /// A gesture over the key as the user designed it, at full size even
+    /// while the key is drawn smaller for being held.
+    fn draw_guard(&self, img: &mut RgbaImage, look: Look) {
+        let ring = |color| RingStyle {
+            visible: true,
+            color,
+            size: RingStyle::MAX_SIZE,
+        };
+        match look {
+            Look::Hold(percent) => draw_ring(img, percent, &ring(GUARD_COLOR)),
+            Look::Armed(left) => {
+                dim(img);
+                let size = img.width() as f32;
+                if let Some(font) = &self.icon_font {
+                    draw_icon_raised(
+                        img,
+                        font,
+                        egui_phosphor::regular::HAND_TAP,
+                        size * 0.4,
+                        GUARD_COLOR,
+                    );
+                }
+                if let Some(font) = &self.title_font {
+                    draw_outlined(img, font, "Again", size * 0.17, size * 0.8, ICON_COLOR);
+                }
+                draw_ring(img, left, &ring(GUARD_COLOR));
+            }
+            Look::Done => draw_ring(img, 100, &ring(YES_COLOR)),
+        }
+    }
+
+    /// A key of a confirmation screen, drawn on black.
+    pub fn answer(&self, answer: Answer, size: u32) -> RgbaImage {
+        use egui_phosphor::regular as i;
+        let size = size.clamp(8, 1024);
+        let mut img = RgbaImage::from_pixel(size, size, EMPTY);
+        let (glyph, label, color) = match answer {
+            Answer::Yes => (i::CHECK, "Yes", YES_COLOR),
+            Answer::No => (i::X, "No", NO_COLOR),
+            Answer::Back(_) => (i::ARROW_U_UP_LEFT, "Back", ICON_COLOR),
+        };
+        let px = size as f32;
+        if let Some(font) = &self.icon_font {
+            draw_icon_raised(&mut img, font, glyph, px * 0.42, color);
+        }
+        if let Some(font) = &self.title_font {
+            draw_outlined(&mut img, font, label, px * 0.19, px * 0.82, ICON_COLOR);
+        }
+        if let Answer::Back(left) = answer {
+            let track = RingStyle {
+                visible: true,
+                color: RING_TRACK,
+                size: RingStyle::MAX_SIZE,
+            };
+            // The time left shows light on the dark track.
+            draw_ring(&mut img, 100, &track);
+            let light = RingStyle {
+                color: ICON_COLOR,
+                ..track
+            };
+            draw_ring(&mut img, left, &light);
+        }
+        img
+    }
+
+    /// [`Self::answer`] for the device.
+    pub fn answer_image(
+        &self,
+        answer: Answer,
+        model: &DeviceModel,
+        orientation: Orientation,
+    ) -> Vec<u8> {
+        encode_key(
+            self.answer(answer, model.key_image_size),
+            model,
+            orientation,
+        )
     }
 
     /// The title style a key is drawn with.
@@ -314,7 +414,15 @@ impl Renderer {
                 actions::switch_side(key).hash(&mut h);
             }
             self.pressed_size(live).hash(&mut h);
+            live.guard.hash(&mut h);
         }
+        h.finish()
+    }
+
+    /// Changes whenever a confirmation screen key's pixels change.
+    pub fn answer_hash(&self, answer: Answer) -> u64 {
+        let mut h = DefaultHasher::new();
+        ("confirm-answer", answer).hash(&mut h);
         h.finish()
     }
 
@@ -709,13 +817,27 @@ fn fit_box(src: &RgbaImage, side: u32) -> RgbaImage {
     imageops::resize(src, nw, nh, imageops::FilterType::Triangle)
 }
 
-/// Short feedback over the dimmed key: a failure or success icon.
-fn draw_mark(img: &mut RgbaImage, font: &FontArc, style: &MarkStyle) {
+/// Darkens a picture so what is drawn over it stands out.
+fn dim(img: &mut RgbaImage) {
     for px in img.pixels_mut() {
         for c in &mut px.0[..3] {
             *c /= 3;
         }
     }
+}
+
+/// An icon centred across the key and a little above its middle, leaving
+/// room for a word below.
+fn draw_icon_raised(img: &mut RgbaImage, font: &FontArc, glyph: &str, px: f32, color: [u8; 3]) {
+    let mut layer = RgbaImage::new(img.width(), img.height());
+    draw_icon_colored(&mut layer, font, glyph, px, color);
+    let lift = (img.height() as f32 * 0.12).round() as i64;
+    imageops::overlay(img, &layer, 0, -lift);
+}
+
+/// Short feedback over the dimmed key: a failure or success icon.
+fn draw_mark(img: &mut RgbaImage, font: &FontArc, style: &MarkStyle) {
+    dim(img);
     let percent = style.size.clamp(MarkStyle::MIN_SIZE, MarkStyle::MAX_SIZE);
     let size = img.width() as f32 * f32::from(percent) / 100.0;
     draw_icon_colored(img, font, mark_glyph(&style.icon), size, style.color);
@@ -2031,6 +2153,77 @@ mod tests {
             r.key_hash(Some(&other), one, None),
             r.key_hash(Some(&other), two, None)
         );
+    }
+
+    #[test]
+    fn a_protected_key_shows_its_gesture_over_its_picture() {
+        let mut r = Renderer::new();
+        let key = KeyConfig::new(actions::HOTKEY, json!({}));
+        let at = |look| Live {
+            guard: Some(look),
+            ..Live::default()
+        };
+        let idle = r.render(Some(&key), 72, Live::default(), None);
+        for look in [Look::Hold(0), Look::Hold(50), Look::Armed(70), Look::Done] {
+            let img = r.render(Some(&key), 72, at(look), None);
+            assert_eq!(img.dimensions(), (72, 72));
+            assert_ne!(img, idle, "{look:?}");
+            assert_ne!(
+                r.key_hash(Some(&key), at(look), None),
+                r.key_hash(Some(&key), Live::default(), None)
+            );
+        }
+        assert_ne!(
+            r.key_hash(Some(&key), at(Look::Hold(40)), None),
+            r.key_hash(Some(&key), at(Look::Hold(41)), None)
+        );
+        // The hold ring fills clockwise from the top in the guard colour.
+        let half = r.render(Some(&key), 72, at(Look::Hold(50)), None);
+        let px = |img: &RgbaImage, x, y| img.get_pixel(x, y).0;
+        assert!(px(&half, 69, 36)[0] > 200 && px(&half, 69, 36)[2] < 100);
+        // The rest is the dark track.
+        assert!(px(&half, 2, 36)[0] < 128);
+        // On a key drawn smaller while held the ring stays at full size.
+        let held = Live {
+            pressed: true,
+            guard: Some(Look::Hold(100)),
+            ..Live::default()
+        };
+        let img = r.render(Some(&key), 72, held, None);
+        assert!(px(&img, 36, 2)[0] > 200);
+        // Device images come out at the model's size.
+        let model = DeviceModel::of(deckly_core::DeviceKind::Mk2);
+        let jpeg = r.device_image(
+            Some(&key),
+            at(Look::Done),
+            None,
+            model,
+            Orientation::Standard,
+        );
+        let decoded = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!(decoded.width(), model.key_image_size);
+    }
+
+    #[test]
+    fn confirmation_answers_are_distinct_and_key_sized() {
+        let r = Renderer::new();
+        let model = DeviceModel::of(deckly_core::DeviceKind::Mini);
+        let answers = [Answer::Yes, Answer::No, Answer::Back(100), Answer::Back(50)];
+        let images: Vec<RgbaImage> = answers.iter().map(|&a| r.answer(a, 80)).collect();
+        for (i, img) in images.iter().enumerate() {
+            assert_eq!(img.dimensions(), (80, 80));
+            // Something is drawn on the black key.
+            assert!(img.pixels().any(|p| p.0[..3] != [0, 0, 0]));
+            for other in &images[i + 1..] {
+                assert_ne!(img, other);
+            }
+        }
+        let hashes: std::collections::HashSet<u64> =
+            answers.iter().map(|&a| r.answer_hash(a)).collect();
+        assert_eq!(hashes.len(), answers.len());
+        let bmp = r.answer_image(Answer::Yes, model, Orientation::Standard);
+        let decoded = image::load_from_memory(&bmp).unwrap();
+        assert_eq!(decoded.width(), model.key_image_size);
     }
 
     #[test]

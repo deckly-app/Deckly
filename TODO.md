@@ -51,6 +51,9 @@ Planned features, chosen by the project owner on 2026-11-02.
 
 Chosen by the project owner on 2026-11-14.
 
+- [x] Protect important keys from accidental presses.
+      Done: the key form's Protect row: Hold to run, Press twice, or a
+      Confirm screen on the device (Yes, No, Back, optionally shuffled).
 - [ ] Hold layer (Fn): holding one key temporarily shows another set of
       actions on the other keys, with their matching images and titles.
       Releasing it restores the previous set. Release, device disconnect and
