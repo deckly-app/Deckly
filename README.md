@@ -63,15 +63,18 @@ Plugins with web pages also need WebKitGTK 4.1. On macOS it puts
 curl -fsSL https://raw.githubusercontent.com/deckly-app/Deckly/main/install.sh | sh -s -- --uninstall
 ```
 
-Windows (PowerShell):
+Windows: download
+[**deckly-setup-windows-x64.exe**](https://github.com/deckly-app/Deckly/releases/latest/download/deckly-setup-windows-x64.exe)
+and run it. Or, from PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/deckly-app/Deckly/main/install.ps1 | iex
 ```
 
-This installs to `%LOCALAPPDATA%\Programs\Deckly` with a Start menu entry,
-without administrator rights. The builds are not code-signed, so Windows
-SmartScreen and macOS Gatekeeper may warn before the first start.
+Both install to `%LOCALAPPDATA%\Programs\Deckly` with a Start menu entry,
+without administrator rights; remove Deckly in Settings > Apps. The builds
+are not code-signed, so Windows SmartScreen ("More info" > "Run anyway") and
+macOS Gatekeeper may warn before the first start.
 
 Deckly asks GitHub once a day whether a new version is out (Preferences >
 General, next to the version; it can be turned off there). A new version is
