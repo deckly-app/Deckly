@@ -103,7 +103,9 @@ cargo dev
 This builds the whole workspace, including the separate `deckly-web` helper,
 then starts the editor. A failed build stops the launch. For an optimized
 build, use `cargo dev --release`. Plain `cargo run` and `cargo run --release`
-from the repository root use the same launcher.
+from the repository root use the same launcher. To install the checkout as
+your Deckly on Linux or macOS, in place of a release, run `cargo dev install`
+(see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 Close existing Deckly instances before rebuilding, especially on Windows,
 where a running executable cannot be replaced: use Quit Deckly in the tray,

@@ -52,6 +52,17 @@ pub fn install(args: impl Iterator<Item = OsString>) -> Result<bool, String> {
         eprintln!("deckly dev: checks failed; nothing was installed");
         return Ok(false);
     }
+    if !install_tool(debug)? {
+        return Ok(false);
+    }
+    print_next_steps(crate::root()?);
+    Ok(true)
+}
+
+/// Installs `deckly-cli` and `cargo-deckly` from this checkout into Cargo's
+/// bin folder, without checks. `cargo install --path` builds in the
+/// workspace's target folder, so unchanged crates are not rebuilt.
+pub fn install_tool(debug: bool) -> Result<bool, String> {
     let root = crate::root()?;
     let cli = root.join("crates").join("deckly-cli");
     let mut install = Command::new(crate::cargo());
@@ -61,11 +72,7 @@ pub fn install(args: impl Iterator<Item = OsString>) -> Result<bool, String> {
         .arg(&cli)
         .args(["--locked", "--force"])
         .args(debug.then_some("--debug"));
-    if !step("install deckly-cli", install.current_dir(root))? {
-        return Ok(false);
-    }
-    print_next_steps(root);
-    Ok(true)
+    step("install deckly-cli", install.current_dir(root))
 }
 
 fn run_checks(fix: bool) -> Result<bool, String> {

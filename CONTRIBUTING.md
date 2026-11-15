@@ -41,6 +41,33 @@ without opening windows or starting plugins:
 cargo dev --no-run
 ```
 
+To use this checkout as your installed Deckly (Linux and macOS):
+
+```sh
+cargo dev install
+```
+
+Builds the release binaries (only what changed is recompiled) and installs
+them where the install script puts a release, replacing that install in
+place: on Linux `~/.local/lib/deckly` with the `deckly` link in
+`~/.local/bin`, the menu entry and the icon; on macOS
+`~/Applications/Deckly.app`. It then installs `deckly-cli` and
+`cargo-deckly` like `cargo dev install-cli --no-check`. `install.sh
+--uninstall` removes it as usual.
+
+- `--debug` installs debug binaries, `--no-cli` leaves the plugin tool
+  alone, `--prefix <dir>` installs elsewhere (Linux: the prefix, default
+  `DECKLY_PREFIX` or `~/.local`; macOS: the folder for `Deckly.app`).
+- The app shows "Local build <commit>" at the bottom of Preferences, General
+  (`-dirty` with uncommitted changes) and never updates itself to a release;
+  run the install script to go back to releases.
+- A running Deckly keeps the old build until you quit it from the tray and
+  start it again; the command says when one is running.
+- Linux device rules are never installed with sudo here: when they are
+  missing or differ from the checkout, the command prints the command to run.
+- Windows is not supported yet: it installs through the setup program, so use
+  `cargo dev dist --setup` and run the setup it writes.
+
 The launcher does not run the test suite automatically; use the checks below
 before pushing. The web engine stays in the helper process; the launcher
 adds no web dependencies to the editor.
