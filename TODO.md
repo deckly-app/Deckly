@@ -131,12 +131,15 @@ the [design draft](docs/plugin-sdk.md).
 - [x] SDK docs for plugin authors: the book in `docs/sdk` (getting started,
       guides, reference), the API reference and `llms.txt`, published on
       GitHub Pages from `dev` (`cargo dev book`). Examples in it are tested.
-- [ ] A `deckly` CLI with an interactive `create` that writes a ready plugin
+- [x] A `deckly` CLI with an interactive `create` that writes a ready plugin
       crate, then `dev`, `validate` and `pack`; Getting started then starts
       from it.
+      Done: `deckly-cli` (also `cargo deckly`) with `create`, `build`, `link`,
+      `unlink`, `list`, `dev`, `validate`, `pack` and `log`.
 - [x] Key faces: the plugin describes a key and Deckly draws it.
-- [ ] Deckly plugin packages (`.decklyPlugin` archives) through the install
+- [x] Deckly plugin packages (`.decklyPlugin` archives) through the install
       path; plain Deckly plugin folders install already.
+      Done: Plugins tab > Add File… or dropping the file on the window.
 - [ ] Faces in the editor without a device: like Stream Deck plugins, a
       Deckly plugin hears of a key only while a device shows it, so the
       editor alone shows the action's icon.
