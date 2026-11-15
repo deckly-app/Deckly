@@ -117,7 +117,8 @@ trait Prompt {
 enum Input {
     Key(KeyEvent),
     Paste(String),
-    Resize,
+    /// The terminal is now this many columns wide.
+    Resize(u16),
 }
 
 fn drive<P: Prompt>(prompt: &mut P) -> Result<(), PromptError> {
@@ -138,7 +139,7 @@ fn drive<P: Prompt>(prompt: &mut P) -> Result<(), PromptError> {
                 }
             },
             Input::Paste(text) => prompt.paste(&text),
-            Input::Resize => screen.resized()?,
+            Input::Resize(columns) => screen.resized(usize::from(columns))?,
         }
     }
 }
@@ -150,7 +151,7 @@ fn read_input() -> io::Result<Input> {
         match event::read()? {
             Event::Key(key) if key.kind != KeyEventKind::Release => return Ok(Input::Key(key)),
             Event::Paste(text) => return Ok(Input::Paste(text)),
-            Event::Resize(..) => return Ok(Input::Resize),
+            Event::Resize(columns, _) => return Ok(Input::Resize(columns)),
             _ => {}
         }
     }
@@ -273,14 +274,66 @@ impl<W: Write> Screen<W> {
         Ok(())
     }
 
-    /// The terminal changed size, and what it did to the lines already
-    /// drawn is not known: the next frame starts below them.
-    fn resized(&mut self) -> io::Result<()> {
-        if self.shown.is_some() {
-            self.leave(false)?;
+    /// The terminal changed size: the next frame is drawn over the old one
+    /// again, from where its first line is now.
+    ///
+    /// Lines are kept narrower than the terminal, so a wider terminal leaves
+    /// them where they were. A narrower one rewraps (reflows) the lines that
+    /// no longer fit, and the first line moves further up; a terminal that
+    /// cuts lines instead keeps the old rows, and the redraw then starts a
+    /// little higher and clears what it passes over.
+    fn resized(&mut self, width: usize) -> io::Result<()> {
+        let Some(frame) = self.shown.take() else {
+            return Ok(());
+        };
+        let up = rows_above_cursor(&frame, self.row, width);
+        let mut buf: Vec<u8> = Vec::new();
+        if up > 0 {
+            queue!(buf, MoveUp(cells(up)))?;
         }
+        queue!(buf, MoveToColumn(0))?;
+        self.out.write_all(&buf)?;
+        self.out.flush()?;
+        self.row = 0;
         Ok(())
     }
+}
+
+/// The rows between the first line of `frame` and the cursor (on line
+/// `row`) once a terminal `width` columns wide has rewrapped the lines.
+fn rows_above_cursor(frame: &Frame, row: usize, width: usize) -> usize {
+    let width = width.max(1);
+    let above: usize = frame
+        .lines
+        .iter()
+        .take(row)
+        .map(|line| visible_width(line).div_ceil(width).max(1))
+        .sum();
+    let column = match frame.cursor {
+        Some((_, column)) => column,
+        // A hidden cursor is left where the last line ends.
+        None => frame.lines.get(row).map_or(0, |line| visible_width(line)),
+    };
+    above + column / width
+}
+
+/// The columns `line` takes on the screen, without its colour codes.
+fn visible_width(line: &str) -> usize {
+    let mut width = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // A CSI sequence ends with a letter.
+            for e in chars.by_ref() {
+                if e.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            width += char_width(c);
+        }
+    }
+    width
 }
 
 // ---------------------------------------------------------------------
@@ -990,22 +1043,53 @@ mod tests {
     }
 
     #[test]
-    fn a_resize_starts_the_next_frame_below_the_old_one() {
+    fn a_wider_terminal_redraws_the_frame_in_place() {
         let mut sink: Vec<u8> = Vec::new();
         let mut screen = Screen::new(&mut sink);
         screen
             .draw(&frame_of(&["? Name: x", "  hint"], Some((0, 9))))
             .unwrap();
-        screen.resized().unwrap();
+        screen.resized(200).unwrap();
         screen
-            .draw(&frame_of(&["? Name: xy", "  hint"], Some((0, 10))))
+            .draw(&frame_of(&["? Name: x", "  hint"], Some((0, 9))))
             .unwrap();
         let mut emulator = Emulator::default();
         emulator.feed(&sink);
-        assert_eq!(
-            emulator.screen(),
-            vec!["? Name: x", "  hint", "? Name: xy", "  hint"]
-        );
+        assert_eq!(emulator.screen(), vec!["? Name: x", "  hint"]);
+    }
+
+    #[test]
+    fn a_resize_while_a_choice_is_shown_redraws_it_in_place() {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut screen = Screen::new(&mut sink);
+        let frame = frame_of(&["? Pick", "> a", "  b"], None);
+        screen.draw(&frame).unwrap();
+        screen.resized(120).unwrap();
+        screen.draw(&frame).unwrap();
+        screen.resized(40).unwrap();
+        screen.draw(&frame).unwrap();
+        let mut emulator = Emulator::default();
+        emulator.feed(&sink);
+        assert_eq!(emulator.screen(), vec!["? Pick", "> a", "  b"]);
+    }
+
+    #[test]
+    fn a_narrower_terminal_counts_the_rows_its_lines_wrap_into() {
+        let banner = "\x1b[1m? Name:\x1b[0m 0123456789012345678901";
+        assert_eq!(visible_width(banner), 30);
+        let frame = frame_of(&[banner, "  hint", "? b"], Some((2, 3)));
+        // Wide enough: one row per line.
+        assert_eq!(rows_above_cursor(&frame, 2, 80), 2);
+        // 30 columns in a 12 wide terminal wrap into three rows.
+        assert_eq!(rows_above_cursor(&frame, 2, 12), 4);
+        // The cursor's own line wraps too.
+        let at_end = frame_of(&[banner], Some((0, 30)));
+        assert_eq!(rows_above_cursor(&at_end, 0, 12), 2);
+        // A hidden cursor is at the end of the last line.
+        let hidden = frame_of(&["? Pick", banner], None);
+        assert_eq!(rows_above_cursor(&hidden, 1, 12), 3);
+        // A zero width does not divide by zero.
+        assert_eq!(rows_above_cursor(&hidden, 1, 0), 36);
     }
 
     #[test]
