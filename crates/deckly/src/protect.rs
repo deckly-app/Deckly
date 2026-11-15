@@ -66,6 +66,9 @@ pub struct Press<P> {
     pub index: u8,
     /// The page and key it is on; a gesture belongs to one page.
     pub context: String,
+    /// What the page looked like at the press. A gesture belongs to the
+    /// page as it was: any edit to it ends the gesture.
+    pub stamp: u64,
     /// The key's protection and what its action needs to run, or `None`
     /// for a key that runs on a plain press, or no key at all.
     pub protect: Option<(Protection, P)>,
@@ -110,6 +113,7 @@ struct Pending<P> {
     physical: u8,
     index: u8,
     context: String,
+    stamp: u64,
     phase: Phase<P>,
 }
 
@@ -185,6 +189,7 @@ impl<P> Guard<P> {
             physical: press.physical,
             index: press.index,
             context: press.context.clone(),
+            stamp: press.stamp,
             phase,
         };
         let hold = |ms: u32, payload| Phase::Holding {
@@ -292,9 +297,11 @@ impl<P> Guard<P> {
         self.pending.take().is_some()
     }
 
-    /// The key and page of the gesture in progress.
-    pub fn pending_at(&self) -> Option<(u8, &str)> {
-        self.pending.as_ref().map(|p| (p.index, p.context.as_str()))
+    /// The key, the page and the page's stamp of the gesture in progress.
+    pub fn pending_at(&self) -> Option<(u8, &str, u64)> {
+        self.pending
+            .as_ref()
+            .map(|p| (p.index, p.context.as_str(), p.stamp))
     }
 
     /// When the guard needs [`Self::tick`] next: the next frame or the end
@@ -459,6 +466,7 @@ mod tests {
             physical: index,
             index,
             context: format!("page.{index}"),
+            stamp: 0,
             protect: protect.map(|p| (p, "run")),
         }
     }
@@ -591,7 +599,7 @@ mod tests {
         ] {
             let mut g = guard();
             g.press(press(5, Some(protect)), 0, t);
-            assert_eq!(g.pending_at(), Some((5, "page.5")));
+            assert_eq!(g.pending_at(), Some((5, "page.5", 0)));
             assert!(g.cancel());
             assert!(!g.cancel());
             assert_eq!(g.pending_at(), None);

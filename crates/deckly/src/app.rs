@@ -1422,6 +1422,23 @@ impl App {
                     changed = true;
                     ui.close();
                 }
+                if let Some(key) = keys
+                    .get_mut(&index)
+                    .filter(|k| Protection::allowed(&k.action))
+                {
+                    ui.separator();
+                    let glyph = if key.protect.is_some() {
+                        icon::SHIELD_CHECK
+                    } else {
+                        icon::SHIELD
+                    };
+                    ui.menu_button(format!("{glyph}  Protect…"), |ui| {
+                        ui.set_width(270.0);
+                        let before = key.protect;
+                        protect_controls(ui, &mut key.protect);
+                        changed |= key.protect != before;
+                    });
+                }
             });
         }
 
@@ -2364,12 +2381,18 @@ impl App {
                     };
                 }
             }
-            if group.is_some() {
+            let protectable = top_level && Protection::allowed(&key.action);
+            if group.is_some() || protectable {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(16.0);
-                    remove = icon_button(ui, icon::TRASH, "Remove").clicked();
-                    if in_sequence && key.action != actions::DELAY {
+                    if group.is_some() {
+                        remove = icon_button(ui, icon::TRASH, "Remove").clicked();
                         ui.add_space(4.0);
+                    }
+                    if protectable {
+                        protect_button(ui, &mut key.protect);
+                    }
+                    if in_sequence && key.action != actions::DELAY {
                         delays_button(ui, &mut key.delays);
                     }
                 });
@@ -2512,9 +2535,6 @@ impl App {
                                         None => {
                                             self.action_form(ui, key, &profiles, &pages, &context)
                                         }
-                                    }
-                                    if top_level && Protection::allowed(&key.action) {
-                                        protect_row(ui, &mut key.protect);
                                     }
                                 });
                         });
@@ -4253,15 +4273,15 @@ fn reset_folder_auto_exit(profile: &mut Profile, folder: &str) -> bool {
     changed
 }
 
-/// An individual action can follow its folder, opt out, or use its own delay.
 /// The modes of protection against accidental presses, in the order the
-/// picker lists them, with what each does.
-const PROTECT_MODES: [(Option<Protection>, &str, &str); 4] = [
+/// popup lists them: their name, short name and what each does.
+const PROTECT_MODES: [(Option<Protection>, &str, &str, &str); 4] = [
     (
         Some(Protection::Hold {
             ms: Protection::HOLD_DEFAULT_MS,
         }),
-        "Hold to run",
+        "Hold to run (recommended)",
+        "Hold",
         "Runs once the key is held this long; letting go earlier does nothing.",
     ),
     (
@@ -4269,6 +4289,7 @@ const PROTECT_MODES: [(Option<Protection>, &str, &str); 4] = [
             ms: Protection::WINDOW_DEFAULT_MS,
         }),
         "Press twice",
+        "Twice",
         "The first press arms the key; a second press within this time runs it.",
     ),
     (
@@ -4277,9 +4298,10 @@ const PROTECT_MODES: [(Option<Protection>, &str, &str); 4] = [
             shuffle: false,
         }),
         "Confirm screen",
+        "Confirm",
         "Asks Yes or No on the device; it closes by itself after this time.",
     ),
-    (None, "Off", "The action runs on a plain press."),
+    (None, "Off", "", "The action runs on a plain press."),
 ];
 
 /// Which entry of [`PROTECT_MODES`] a setting is.
@@ -4292,58 +4314,70 @@ fn protect_mode(setting: Option<Protection>) -> usize {
     }
 }
 
-/// The key form row that protects a key against accidental presses: a
-/// mode, its time, and what it does.
-fn protect_row(ui: &mut Ui, setting: &mut Option<Protection>) {
-    ui.label(RichText::new("Protect").color(TEXT_DIM))
+/// The quiet shield of the key form. Off it is a dim icon; on, an amber
+/// shield with the mode's short name. Its popup holds the settings.
+fn protect_button(ui: &mut Ui, setting: &mut Option<Protection>) {
+    let (_, _, short, _) = PROTECT_MODES[protect_mode(*setting)];
+    let text = match setting {
+        Some(_) => RichText::new(format!("{}  {short}", icon::SHIELD_CHECK)).color(WARNING),
+        None => RichText::new(icon::SHIELD).size(17.0).color(TEXT_DIM),
+    };
+    let resp = ui
+        .add(egui::Button::new(text).frame(false))
         .on_hover_text("Protect from accidental presses");
-    ui.vertical(|ui| {
-        let current = protect_mode(*setting);
+    egui::Popup::from_toggle_button_response(&resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(4.0)
+        .frame(egui::Frame::popup(ui.style()).inner_margin(egui::Margin::same(14)))
+        .show(|ui| {
+            ui.set_width(270.0);
+            ui.label(RichText::new("Protect from accidental presses").font(bold(13.0)));
+            ui.separator();
+            protect_controls(ui, setting);
+        });
+}
+
+/// The settings of a key's protection: a mode, its time, and what it does.
+fn protect_controls(ui: &mut Ui, setting: &mut Option<Protection>) {
+    let current = protect_mode(*setting);
+    for (i, (mode, name, _, _)) in PROTECT_MODES.iter().enumerate() {
+        if ui.radio(i == current, *name).clicked() && i != current {
+            *setting = *mode;
+        }
+    }
+    if let Some(protect) = setting {
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let (_, name, _) = PROTECT_MODES[current];
-            let glyph = if setting.is_some() {
-                icon::SHIELD_CHECK
-            } else {
-                icon::SHIELD
+            let label = match protect {
+                Protection::Hold { .. } => "Hold for",
+                Protection::Twice { .. } => "Second press within",
+                Protection::Confirm { .. } => "Closes after",
             };
-            egui::ComboBox::from_id_salt("key-protect")
-                .selected_text(format!("{glyph}  {name}"))
-                .show_ui(ui, |ui| {
-                    for (i, (mode, name, _)) in PROTECT_MODES.iter().enumerate() {
-                        let mut choice = ui.selectable_label(i == current, *name);
-                        if i == 0 {
-                            choice = choice.on_hover_text("Recommended");
-                        }
-                        if choice.clicked() && i != current {
-                            *setting = *mode;
-                        }
-                    }
-                });
-            if let Some(protect) = setting {
-                let (min, max) = protect.range();
-                let mut seconds = protect.ms() as f32 / 1000.0;
-                let changed = ui
-                    .add(
-                        egui::DragValue::new(&mut seconds)
-                            .range(min as f32 / 1000.0..=max as f32 / 1000.0)
-                            .speed(0.05)
-                            .fixed_decimals(1)
-                            .suffix(" s"),
-                    )
-                    .changed();
-                if changed {
-                    *protect = protect.with_ms((seconds * 1000.0).round() as u32);
-                }
+            ui.label(RichText::new(label).color(TEXT_DIM));
+            let (min, max) = protect.range();
+            let mut seconds = protect.ms() as f32 / 1000.0;
+            let changed = ui
+                .add(
+                    egui::DragValue::new(&mut seconds)
+                        .range(min as f32 / 1000.0..=max as f32 / 1000.0)
+                        .speed(0.05)
+                        .fixed_decimals(1)
+                        .suffix(" s"),
+                )
+                .changed();
+            if changed {
+                *protect = protect.with_ms((seconds * 1000.0).round() as u32);
             }
         });
-        if let Some(Protection::Confirm { shuffle, .. }) = setting {
-            ui.checkbox(shuffle, "Shuffle button positions")
-                .on_hover_text("Place Yes, No and Back anew each time the screen opens");
-        }
-        let (_, _, what) = PROTECT_MODES[protect_mode(*setting)];
-        ui.label(RichText::new(what).color(TEXT_DIM));
-    });
-    ui.end_row();
+    }
+    if let Some(Protection::Confirm { shuffle, .. }) = setting {
+        ui.checkbox(shuffle, "Shuffle button positions")
+            .on_hover_text("Place Yes, No and Back anew each time the screen opens");
+    }
+    ui.add_space(6.0);
+    let (_, _, _, what) = PROTECT_MODES[protect_mode(*setting)];
+    ui.label(RichText::new(what).small().color(TEXT_DIM));
 }
 
 /// Marks a protected key in the editor's grid.
@@ -4360,6 +4394,7 @@ fn protect_badge(painter: &egui::Painter, key: Rect) {
     );
 }
 
+/// An individual action can follow its folder, opt out, or use its own delay.
 fn folder_exit_button(ui: &mut Ui, setting: &mut Option<AutoExit>, inherited: AutoExit) {
     let response = icon_button(ui, icon::ARROW_BEND_LEFT_UP, "Folder Exit");
     egui::Popup::from_toggle_button_response(&response)

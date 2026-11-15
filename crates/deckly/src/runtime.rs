@@ -439,6 +439,32 @@ impl State {
         self.shown(profile)?.keys.get(&key).cloned()
     }
 
+    /// A fingerprint of the page or folder a device shows: it changes with
+    /// any edit to its keys, their places or what they do. Settings that
+    /// plugins keep for their own actions are left out, since a plugin may
+    /// store them at any time.
+    fn page_stamp(&self, serial: &str) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let Some(page) = self.assigned(serial).and_then(|p| self.shown(p)) else {
+            return 0;
+        };
+        let mut page = page.clone();
+        let plugin = |k: &KeyConfig| self.catalog.action(&k.action).is_some();
+        for key in page.keys.values_mut() {
+            if plugin(key) {
+                key.settings = serde_json::Value::Null;
+            }
+            for member in key.groups.iter_mut().flatten() {
+                if plugin(member) {
+                    member.settings = serde_json::Value::Null;
+                }
+            }
+        }
+        let mut h = DefaultHasher::new();
+        serde_json::to_vec(&page).unwrap_or_default().hash(&mut h);
+        h.finish()
+    }
+
     /// The context of a key on what a device shows now.
     pub(crate) fn context(&self, serial: &str, key: u8) -> Option<String> {
         let page = self.shown(self.assigned(serial)?)?;
@@ -734,8 +760,15 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 }) => {
                     let mut hit = key_event(&state, &devices, &mut links, handle, key, pressed)
                         .filter(|hit| admitted(&gate, &mut held_back, handle, hit, pressed));
-                    let verdict =
-                        guard_key(&mut links, &groups, handle, key, hit.as_ref(), pressed);
+                    let verdict = guard_key(
+                        &state,
+                        &mut links,
+                        &groups,
+                        handle,
+                        key,
+                        hit.as_ref(),
+                        pressed,
+                    );
                     if pressed && let Some(hit) = hit.as_mut() {
                         if let Some(source) = hit.exit.as_mut() {
                             lock(&state).pause_folder_exit(source);
@@ -1037,6 +1070,7 @@ fn admitted(
 /// protected key is held back. A running Multi Action stays stoppable by a
 /// plain press.
 fn guard_key(
+    state: &Shared,
     links: &mut Links,
     groups: &Groups,
     handle: Handle,
@@ -1065,6 +1099,7 @@ fn guard_key(
         physical,
         index,
         context: hit.map(|h| h.context.clone()).unwrap_or_default(),
+        stamp: lock(state).page_stamp(&link.serial),
         protect,
     };
     link.guard.press(press, protect::seed(), Instant::now())
@@ -1117,9 +1152,10 @@ fn fire(tools: &Tools, groups: &mut Groups, handle: Handle, mut hit: KeyHit) {
 }
 
 /// Moves gestures of protected keys on: ends those whose key is no longer
-/// where they started (another page, folder or profile), on a device that
-/// is off or asleep, or while the computer is locked; and returns the keys
-/// held long enough. Returns too whether any gesture was in progress, so
+/// where they started (another page, folder or profile, or the page was
+/// edited: a key moved, removed or changed), on a device that is off or
+/// asleep, or while the computer is locked; and returns the keys held long
+/// enough. Returns too whether any gesture was in progress, so
 /// its key is drawn again.
 fn guard_timers(state: &Shared, links: &mut Links, now: Instant) -> (bool, Vec<(Handle, KeyHit)>) {
     let s = lock(state);
@@ -1128,11 +1164,12 @@ fn guard_timers(state: &Shared, links: &mut Links, now: Instant) -> (bool, Vec<(
     for (&handle, link) in links.iter_mut() {
         let stale = match link.guard.pending_at() {
             None => continue,
-            Some((index, context)) => {
+            Some((index, context, stamp)) => {
                 !link.enabled
                     || link.asleep
                     || s.gate.locked_out()
                     || s.context(&link.serial, index).as_deref() != Some(context)
+                    || s.page_stamp(&link.serial) != stamp
             }
         };
         busy = true;
@@ -1913,10 +1950,20 @@ fn refresh(
             }
             // index < key_count, which is a u8.
             let physical = link.orientation.map_key(index as u8, count);
+            let backdrop = wallpaper.as_ref().map(|wallpaper| render::Backdrop {
+                wallpaper,
+                model: link.model,
+                // index < key_count, which is a u8.
+                index: index as u8,
+            });
             if let Some(cover) = view.cover {
+                // Blank keys show the wallpaper as an empty key does.
                 let (hash, answer) = match cover {
-                    Cover::Answer(a) => (renderer.answer_hash(a), Some(a)),
-                    Cover::Blank => (renderer.key_hash(None, Live::default(), None), None),
+                    Cover::Answer(a) => (renderer.answer_hash(a, backdrop), Some(a)),
+                    Cover::Blank => (
+                        renderer.key_hash_on(None, Live::default(), None, backdrop),
+                        None,
+                    ),
                 };
                 let Some(slot) = link.sent.get_mut(index) else {
                     continue;
@@ -1924,14 +1971,14 @@ fn refresh(
                 if *slot != Some(hash) {
                     *slot = Some(hash);
                     let image = match answer {
-                        Some(a) => renderer.answer_image(a, link.model, link.orientation),
+                        Some(a) => renderer.answer_image(a, link.model, link.orientation, backdrop),
                         None => renderer.device_image_on(
                             None,
                             Live::default(),
                             None,
                             link.model,
                             link.orientation,
-                            None,
+                            backdrop,
                         ),
                     };
                     devices.set_image(handle, physical, image);
@@ -1948,12 +1995,6 @@ fn refresh(
             if let Some(next) = next {
                 link.next_frame = Some(link.next_frame.map_or(next, |n| n.min(next)));
             }
-            let backdrop = wallpaper.as_ref().map(|wallpaper| render::Backdrop {
-                wallpaper,
-                model: link.model,
-                // index < key_count, which is a u8.
-                index: index as u8,
-            });
             let hash = renderer.key_hash_on(key.as_ref(), live, overlay.as_ref(), backdrop);
             let Some(slot) = link.sent.get_mut(index) else {
                 continue;
@@ -2811,6 +2852,7 @@ mod tests {
                 pressed,
             );
             let verdict = guard_key(
+                &self.state,
                 &mut self.links,
                 &self.groups,
                 1,
@@ -2957,7 +2999,7 @@ mod tests {
         let yes = usize::from(layout.yes);
         assert_eq!(
             deck.links[&1].sent[yes],
-            Some(deck.renderer.answer_hash(Answer::Yes))
+            Some(deck.renderer.answer_hash(Answer::Yes, None))
         );
         // Yes does nothing while the opening press lasts.
         deck.key(layout.yes, true);
@@ -3012,6 +3054,113 @@ mod tests {
             deck.refresh();
             assert_eq!(deck.links[&1].sent, before);
         }
+    }
+
+    /// Edits the page the device shows, as the editor does.
+    fn edit(deck: &Deck, change: impl FnOnce(&mut std::collections::BTreeMap<u8, KeyConfig>)) {
+        change(&mut lock(&deck.state).profiles[0].pages[0].keys);
+    }
+
+    /// Every key on the device as a fresh render of what the page is now.
+    fn shows_the_page_in_full(deck: &mut Deck) {
+        let sent = deck.links[&1].sent.clone();
+        assert!(sent.iter().all(Option::is_some));
+        deck.links.get_mut(&1).unwrap().forget_images();
+        deck.refresh();
+        assert_eq!(deck.links[&1].sent, sent);
+    }
+
+    #[test]
+    fn moving_the_key_under_a_confirmation_screen_ends_it() {
+        let mut deck = Deck::new(protected(Protection::confirm()));
+        deck.refresh();
+        deck.key(0, true);
+        deck.key(0, false);
+        let layout = deck.screen().unwrap().layout;
+        deck.refresh();
+        edit(&deck, |keys| {
+            let key = keys.remove(&0).unwrap();
+            keys.insert(3, key);
+        });
+        // The editor's refresh comes first, then the loop moves on.
+        deck.refresh();
+        deck.wake(Duration::ZERO);
+        assert!(deck.screen().is_none());
+        deck.refresh();
+        shows_the_page_in_full(&mut deck);
+        // The old Yes is just a key again and nothing ran.
+        deck.key(layout.yes, true);
+        deck.key(layout.yes, false);
+        assert!(deck.ran().is_empty());
+        // At its new place the key asks again.
+        deck.key(3, true);
+        assert!(deck.screen().is_some());
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn editing_the_page_disarms_a_key() {
+        // Moved: the armed state does not follow it, nor stay behind.
+        let mut deck = Deck::new(protected(Protection::twice()));
+        deck.refresh();
+        deck.key(0, true);
+        deck.key(0, false);
+        deck.refresh();
+        edit(&deck, |keys| {
+            let key = keys.remove(&0).unwrap();
+            keys.insert(7, key);
+        });
+        deck.refresh();
+        assert!(deck.wake(Duration::ZERO));
+        assert_eq!(deck.links[&1].guard.pending_at(), None);
+        deck.refresh();
+        shows_the_page_in_full(&mut deck);
+        deck.key(7, true);
+        deck.key(7, false);
+        assert!(deck.ran().is_empty());
+        // Deleted: dropped, and nothing runs later.
+        edit(&deck, |keys| {
+            keys.remove(&7);
+        });
+        deck.wake(Duration::ZERO);
+        assert_eq!(deck.links[&1].guard.pending_at(), None);
+        deck.wake(Duration::from_secs(10));
+        assert!(deck.ran().is_empty());
+        deck.refresh();
+        shows_the_page_in_full(&mut deck);
+        // Any other edit to the page counts too, such as a new title.
+        let mut deck = Deck::new(protected(Protection::hold()));
+        deck.key(0, true);
+        edit(&deck, |keys| {
+            keys.insert(9, KeyConfig::new(actions::HOTKEY, json!({})));
+        });
+        deck.wake(Duration::from_secs(5));
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn a_confirmation_screen_keeps_the_wallpaper_on_blank_keys() {
+        let path = std::env::temp_dir().join(format!("deckly-wall-{}.png", uuid::Uuid::new_v4()));
+        RgbaImage::from_pixel(400, 300, image::Rgba([20, 160, 90, 255]))
+            .save(&path)
+            .unwrap();
+        let mut deck = Deck::new(protected(Protection::confirm()));
+        lock(&deck.state).profiles[0].wallpaper = Some(Wallpaper::new(path.clone()));
+        deck.refresh();
+        let before = deck.links[&1].sent.clone();
+        deck.key(0, true);
+        deck.key(0, false);
+        let layout = deck.screen().unwrap().layout;
+        deck.refresh();
+        let sent = deck.links[&1].sent.clone();
+        for index in 1..15 {
+            if [layout.yes, layout.no, layout.back].contains(&index) {
+                continue;
+            }
+            // Empty keys look the same with the screen up and without.
+            assert_eq!(sent[usize::from(index)], before[usize::from(index)]);
+        }
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
