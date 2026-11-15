@@ -24,6 +24,7 @@ mod official;
 mod os;
 mod plugins;
 mod prefs;
+mod protect;
 mod render;
 mod runtime;
 mod secrets;

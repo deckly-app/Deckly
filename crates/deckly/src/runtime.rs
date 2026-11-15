@@ -12,13 +12,14 @@ use crate::lock_gate::Gate;
 use crate::official::Preferred;
 use crate::os::{active_window, screen_lock, tray};
 use crate::plugins::{self, Overlay};
-use crate::render::{self, Live, Renderer};
+use crate::protect::{self, Verdict};
+use crate::render::{self, Answer, Live, Renderer};
 use crate::sequence::{self, Press, Step};
 use crate::store;
 use deckly_core::profile::{DEFAULT_PROFILE_NAME, MAX_FOLDER_DEPTH};
 use deckly_core::{
-    DeviceKind, DeviceModel, KeyConfig, LockLook, Orientation, Page, Profile, Settings, TitleStyle,
-    Wallpaper, WallpaperChoice, resolve_wallpaper,
+    DeviceKind, DeviceModel, KeyConfig, LockLook, Orientation, Page, Profile, Protection, Settings,
+    TitleStyle, Wallpaper, WallpaperChoice, resolve_wallpaper,
 };
 use deckly_device::{ConnectedDevice, DeviceManager, Event, Handle};
 use deckly_plugin_host::{Host, Instance, Status, protocol};
@@ -208,6 +209,7 @@ impl State {
             pressed: false,
             exit: self.folder_exit.progress(&profile.id, Instant::now()),
             frame: 0,
+            guard: None,
         }
     }
 
@@ -437,6 +439,32 @@ impl State {
         self.shown(profile)?.keys.get(&key).cloned()
     }
 
+    /// A fingerprint of the page or folder a device shows: it changes with
+    /// any edit to its keys, their places or what they do. Settings that
+    /// plugins keep for their own actions are left out, since a plugin may
+    /// store them at any time.
+    fn page_stamp(&self, serial: &str) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let Some(page) = self.assigned(serial).and_then(|p| self.shown(p)) else {
+            return 0;
+        };
+        let mut page = page.clone();
+        let plugin = |k: &KeyConfig| self.catalog.action(&k.action).is_some();
+        for key in page.keys.values_mut() {
+            if plugin(key) {
+                key.settings = serde_json::Value::Null;
+            }
+            for member in key.groups.iter_mut().flatten() {
+                if plugin(member) {
+                    member.settings = serde_json::Value::Null;
+                }
+            }
+        }
+        let mut h = DefaultHasher::new();
+        serde_json::to_vec(&page).unwrap_or_default().hash(&mut h);
+        h.finish()
+    }
+
     /// The context of a key on what a device shows now.
     pub(crate) fn context(&self, serial: &str, key: u8) -> Option<String> {
         let page = self.shown(self.assigned(serial)?)?;
@@ -518,6 +546,8 @@ struct Link {
     held: HashMap<u8, KeyHit>,
     /// When an animated key on it shows its next frame.
     next_frame: Option<Instant>,
+    /// Gestures of protected keys in progress.
+    guard: protect::Guard<KeyHit>,
 }
 
 /// A plugin key as its plugin last heard of it.
@@ -545,6 +575,10 @@ impl Link {
             members: HashMap::new(),
             held: HashMap::new(),
             next_frame: None,
+            guard: protect::Guard::new(protect::Board {
+                keys: info.model.key_count(),
+                columns: info.model.columns,
+            }),
         }
     }
 
@@ -616,6 +650,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
         // DECKLY_DEBUG=1 prints device events and action results to stderr.
         let debug = std::env::var_os("DECKLY_DEBUG").is_some();
         loop {
+            let (guarded, fires) = guard_timers(&state, &mut links, Instant::now());
             let tools = Tools {
                 state: &state,
                 actions: &actions,
@@ -623,6 +658,9 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 links: &links,
                 results: &step_tx,
             };
+            for (handle, hit) in fires {
+                fire(&tools, &mut groups, handle, hit);
+            }
             let followed = follow_window(&state, &links);
             let pressed = press_timers(&tools, &mut groups);
             let exited = {
@@ -632,7 +670,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 // A cancelled countdown takes its ring off the key too.
                 exited || s.folder_exit.deadline() != counting
             };
-            if pressed || followed || exited {
+            if pressed || followed || exited || guarded {
                 refresh(&state, &devices, &mut renderer, &mut links, host.as_ref());
                 repaint();
             }
@@ -722,6 +760,15 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 }) => {
                     let mut hit = key_event(&state, &devices, &mut links, handle, key, pressed)
                         .filter(|hit| admitted(&gate, &mut held_back, handle, hit, pressed));
+                    let verdict = guard_key(
+                        &state,
+                        &mut links,
+                        &groups,
+                        handle,
+                        key,
+                        hit.as_ref(),
+                        pressed,
+                    );
                     if pressed && let Some(hit) = hit.as_mut() {
                         if let Some(source) = hit.exit.as_mut() {
                             lock(&state).pause_folder_exit(source);
@@ -732,31 +779,18 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                             *held = hit.clone();
                         }
                     }
-                    let exit = hit
-                        .as_ref()
-                        .filter(|h| h.config.groups.is_empty() && !pressed)
-                        .and_then(|h| h.exit.clone());
-                    match hit {
-                        Some(hit) if !hit.config.groups.is_empty() => {
-                            let tools = Tools {
-                                state: &state,
-                                actions: &actions,
-                                host: host.as_ref(),
-                                links: &links,
-                                results: &step_tx,
-                            };
-                            group_key(&tools, &mut groups, handle, hit, pressed);
-                        }
-                        Some(hit) if hit.plugin => {
-                            plugin_key(&state, host.as_ref(), &links, handle, &hit, pressed);
-                        }
-                        Some(hit) if pressed => {
-                            let _ = actions.send((handle, hit.context, hit.config));
-                        }
-                        _ => {}
-                    }
-                    if let Some(source) = exit {
-                        lock(&state).arm_folder_exit(source, Instant::now());
+                    let tools = Tools {
+                        state: &state,
+                        actions: &actions,
+                        host: host.as_ref(),
+                        links: &links,
+                        results: &step_tx,
+                    };
+                    match verdict {
+                        Verdict::Pass => dispatch(&tools, &mut groups, handle, hit, pressed),
+                        // A protected key waits for its gesture.
+                        Verdict::Take => {}
+                        Verdict::Fire(fired) => fire(&tools, &mut groups, handle, fired),
                     }
                     // Shows the held key smaller (or normal again), and the
                     // keys a screensaver covered.
@@ -784,6 +818,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                     refresh(&state, &devices, &mut renderer, &mut links, host.as_ref());
                 }
                 Msg::ScreenLock => {
+                    cancel_gestures(&mut links);
                     follow_lock(&state, &devices, &mut links);
                     refresh(&state, &devices, &mut renderer, &mut links, host.as_ref());
                     repaint();
@@ -818,6 +853,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                     repaint();
                 }
                 Msg::Shutdown => {
+                    cancel_gestures(&mut links);
                     for (&handle, link) in &links {
                         if link.enabled {
                             devices.reset(handle);
@@ -1027,6 +1063,136 @@ fn admitted(
     // A release lost to a page change must not silence a later one.
     held_back.remove(&key);
     true
+}
+
+/// Asks a device's guard about a key change: whether the key's action hears
+/// it now, later or not at all. The one place a physical press of a
+/// protected key is held back. A running Multi Action stays stoppable by a
+/// plain press.
+fn guard_key(
+    state: &Shared,
+    links: &mut Links,
+    groups: &Groups,
+    handle: Handle,
+    physical: u8,
+    hit: Option<&KeyHit>,
+    pressed: bool,
+) -> Verdict<KeyHit> {
+    let Some(link) = links.get_mut(&handle) else {
+        return Verdict::Pass;
+    };
+    if !pressed {
+        return link.guard.release(physical);
+    }
+    let index = hit.map_or_else(
+        || link.orientation.map_key(physical, link.model.key_count()),
+        |h| h.index,
+    );
+    let protect = hit.and_then(|h| {
+        let protect = h
+            .config
+            .protect
+            .filter(|_| Protection::allowed(&h.config.action))?;
+        (!groups.runs.contains_key(&h.context)).then(|| (protect, h.clone()))
+    });
+    let press = protect::Press {
+        physical,
+        index,
+        context: hit.map(|h| h.context.clone()).unwrap_or_default(),
+        stamp: lock(state).page_stamp(&link.serial),
+        protect,
+    };
+    link.guard.press(press, protect::seed(), Instant::now())
+}
+
+/// Runs a key's action for a key change, as for any key: Multi Actions,
+/// plugin actions and built-in actions each their own way.
+fn dispatch(
+    tools: &Tools,
+    groups: &mut Groups,
+    handle: Handle,
+    hit: Option<KeyHit>,
+    pressed: bool,
+) {
+    let exit = hit
+        .as_ref()
+        .filter(|h| h.config.groups.is_empty() && !pressed)
+        .and_then(|h| h.exit.clone());
+    match hit {
+        Some(hit) if !hit.config.groups.is_empty() => {
+            group_key(tools, groups, handle, hit, pressed);
+        }
+        Some(hit) if hit.plugin => {
+            plugin_key(tools.state, tools.host, tools.links, handle, &hit, pressed);
+        }
+        Some(hit) if pressed => {
+            let _ = tools.actions.send((handle, hit.context, hit.config));
+        }
+        _ => {}
+    }
+    if let Some(source) = exit {
+        lock(tools.state).arm_folder_exit(source, Instant::now());
+    }
+}
+
+/// Runs a protected key whose gesture is complete: a press and a release,
+/// so a plugin hears its keyDown and keyUp only now.
+fn fire(tools: &Tools, groups: &mut Groups, handle: Handle, mut hit: KeyHit) {
+    {
+        let mut s = lock(tools.state);
+        if s.gate.blocks(&hit.config.action) {
+            return;
+        }
+        if let Some(source) = hit.exit.as_mut() {
+            s.pause_folder_exit(source);
+        }
+    }
+    dispatch(tools, groups, handle, Some(hit.clone()), true);
+    dispatch(tools, groups, handle, Some(hit), false);
+}
+
+/// Moves gestures of protected keys on: ends those whose key is no longer
+/// where they started (another page, folder or profile, or the page was
+/// edited: a key moved, removed or changed), on a device that is off or
+/// asleep, or while the computer is locked; and returns the keys held long
+/// enough. Returns too whether any gesture was in progress, so
+/// its key is drawn again.
+fn guard_timers(state: &Shared, links: &mut Links, now: Instant) -> (bool, Vec<(Handle, KeyHit)>) {
+    let s = lock(state);
+    let mut busy = false;
+    let mut fires = Vec::new();
+    for (&handle, link) in links.iter_mut() {
+        let stale = match link.guard.pending_at() {
+            None => continue,
+            Some((index, context, stamp)) => {
+                !link.enabled
+                    || link.asleep
+                    || s.gate.locked_out()
+                    || s.context(&link.serial, index).as_deref() != Some(context)
+                    || s.page_stamp(&link.serial) != stamp
+            }
+        };
+        busy = true;
+        if stale {
+            link.guard.cancel();
+            continue;
+        }
+        if let Some(mut hit) = link.guard.tick(now) {
+            // The key as it is now, in case it was edited meanwhile.
+            if let Some(config) = s.key(&link.serial, hit.index) {
+                hit.config = config;
+            }
+            fires.push((handle, hit));
+        }
+    }
+    (busy, fires)
+}
+
+/// Ends every gesture in progress without running anything.
+fn cancel_gestures(links: &mut Links) {
+    for link in links.values_mut() {
+        link.guard.cancel();
+    }
 }
 
 /// Sends a plugin key's press or release to its plugin. An action with
@@ -1423,6 +1589,11 @@ fn next_wake(state: &Shared, links: &Links, groups: &Groups) -> Option<Instant> 
                 .flatten(),
         )
         .chain(groups.presses.values().filter_map(|p| p.press.deadline()))
+        .chain(
+            links
+                .values()
+                .filter_map(|l| l.guard.deadline(Instant::now())),
+        )
         .min()
 }
 
@@ -1616,6 +1787,31 @@ struct KeyView {
     live: Live,
     overlay: Option<Overlay>,
     shown: Option<Shown>,
+    /// What a confirmation screen shows in place of the key.
+    cover: Option<Cover>,
+}
+
+/// A key of a confirmation screen other than the protected key itself.
+#[derive(Clone, Copy)]
+enum Cover {
+    Answer(Answer),
+    /// Blank and inert while the screen is up.
+    Blank,
+}
+
+/// What a confirmation screen puts on the key at `index`, if anything.
+fn cover(screen: Option<protect::Screen>, index: u8) -> Option<Cover> {
+    let screen = screen.filter(|s| s.origin != index)?;
+    let layout = screen.layout;
+    Some(if index == layout.yes {
+        Cover::Answer(Answer::Yes)
+    } else if index == layout.no {
+        Cover::Answer(Answer::No)
+    } else if index == layout.back {
+        Cover::Answer(Answer::Back(screen.left))
+    } else {
+        Cover::Blank
+    })
 }
 
 /// The plugin actions inside a key.
@@ -1649,13 +1845,14 @@ fn member_views(
     views
 }
 
-/// What one device shows: its keys, the plugin actions inside them, and
-/// the wallpaper of its page.
+/// What one device shows: its keys, the plugin actions inside them, the
+/// wallpaper of its page, and whether a confirmation screen covers it.
 type DeviceWork = (
     Handle,
     Vec<KeyView>,
     HashMap<String, Shown>,
     Option<Wallpaper>,
+    bool,
 );
 
 fn refresh(
@@ -1672,14 +1869,14 @@ fn refresh(
         renderer.title_defaults = s.settings.title_style.clone();
         renderer.key_press = s.settings.key_press;
         renderer.marks.clone_from(&s.settings.feedback_marks);
+        let now = Instant::now();
         for d in &s.devices {
             // A screensaver keeps its keys until the device wakes.
-            if !links
-                .get(&d.handle)
-                .is_some_and(|l| l.enabled && !l.screensaver)
-            {
+            let Some(link) = links.get(&d.handle).filter(|l| l.enabled && !l.screensaver) else {
                 continue;
-            }
+            };
+            let screen = link.guard.screen(now);
+            let look = link.guard.look(now);
             let profile = s.assigned(&d.serial);
             let page = profile
                 .and_then(|p| s.shown(p))
@@ -1711,9 +1908,14 @@ fn refresh(
                     });
                     KeyView {
                         key,
-                        live: Live { pressed, ..live },
+                        live: Live {
+                            pressed,
+                            guard: look.filter(|&(i, _)| i == k).map(|(_, l)| l),
+                            ..live
+                        },
                         overlay,
                         shown,
+                        cover: cover(screen, k),
                     }
                 })
                 .collect();
@@ -1725,7 +1927,7 @@ fn refresh(
                 }
             }
             .map(|(w, _)| w.clone());
-            work.push((d.handle, keys, members, wallpaper));
+            work.push((d.handle, keys, members, wallpaper, screen.is_some()));
         }
     }
     // Only keys refreshed now may ask for the next frame.
@@ -1733,15 +1935,55 @@ fn refresh(
         link.next_frame = None;
     }
     let now = Instant::now();
-    for (handle, keys, members, wallpaper) in work {
+    for (handle, keys, members, wallpaper, covered) in work {
         let Some(link) = links.get_mut(&handle) else {
             continue;
         };
-        update_members(host, link, members);
+        // Under a confirmation screen the page stays as its plugins know it.
+        if !covered {
+            update_members(host, link, members);
+        }
         let count = link.model.key_count();
         for (index, view) in keys.into_iter().enumerate() {
-            if let Some(slot) = link.shown.get_mut(index) {
+            if !covered && let Some(slot) = link.shown.get_mut(index) {
                 update_shown(host, slot, view.shown);
+            }
+            // index < key_count, which is a u8.
+            let physical = link.orientation.map_key(index as u8, count);
+            let backdrop = wallpaper.as_ref().map(|wallpaper| render::Backdrop {
+                wallpaper,
+                model: link.model,
+                // index < key_count, which is a u8.
+                index: index as u8,
+            });
+            if let Some(cover) = view.cover {
+                // Blank keys show the wallpaper as an empty key does.
+                let (hash, answer) = match cover {
+                    Cover::Answer(a) => (renderer.answer_hash(a, backdrop), Some(a)),
+                    Cover::Blank => (
+                        renderer.key_hash_on(None, Live::default(), None, backdrop),
+                        None,
+                    ),
+                };
+                let Some(slot) = link.sent.get_mut(index) else {
+                    continue;
+                };
+                if *slot != Some(hash) {
+                    *slot = Some(hash);
+                    let image = match answer {
+                        Some(a) => renderer.answer_image(a, link.model, link.orientation, backdrop),
+                        None => renderer.device_image_on(
+                            None,
+                            Live::default(),
+                            None,
+                            link.model,
+                            link.orientation,
+                            backdrop,
+                        ),
+                    };
+                    devices.set_image(handle, physical, image);
+                }
+                continue;
             }
             let (key, overlay) = (view.key, view.overlay);
             // A sleeping device shows nothing; its keys stand still.
@@ -1753,12 +1995,6 @@ fn refresh(
             if let Some(next) = next {
                 link.next_frame = Some(link.next_frame.map_or(next, |n| n.min(next)));
             }
-            let backdrop = wallpaper.as_ref().map(|wallpaper| render::Backdrop {
-                wallpaper,
-                model: link.model,
-                // index < key_count, which is a u8.
-                index: index as u8,
-            });
             let hash = renderer.key_hash_on(key.as_ref(), live, overlay.as_ref(), backdrop);
             let Some(slot) = link.sent.get_mut(index) else {
                 continue;
@@ -1767,8 +2003,6 @@ fn refresh(
                 continue;
             }
             *slot = Some(hash);
-            // index < key_count, which is a u8.
-            let physical = link.orientation.map_key(index as u8, count);
             let image = renderer.device_image_on(
                 key.as_ref(),
                 live,
@@ -2563,5 +2797,379 @@ mod tests {
             s.shown(p).map(|f| f.id.as_str()),
             Some(p.pages[1].id.as_str())
         );
+    }
+
+    /// A connected MK.2 showing a profile whose key 0 is `key`.
+    struct Deck {
+        state: Shared,
+        devices: DeviceManager,
+        links: Links,
+        groups: Groups,
+        actions: Sender<Job>,
+        jobs: std::sync::mpsc::Receiver<Job>,
+        results: Sender<Msg>,
+        renderer: Renderer,
+    }
+
+    impl Deck {
+        fn new(key: KeyConfig) -> Self {
+            let (state, devices, links) = one_device(Settings::default());
+            {
+                let mut s = lock(&state);
+                let (id, model) = (s.profiles[0].id.clone(), s.profiles[0].model());
+                s.profiles[0].pages[0].keys.insert(0, key);
+                s.profiles[0].add_page();
+                s.devices.push(ConnectedDevice {
+                    handle: 1,
+                    model,
+                    serial: "S1".into(),
+                    firmware: None,
+                });
+                s.settings.assignments.insert("S1".into(), id);
+            }
+            let (actions, jobs) = channel();
+            let (results, _) = channel();
+            Self {
+                state,
+                devices,
+                links,
+                groups: Groups::default(),
+                actions,
+                jobs,
+                results,
+                renderer: Renderer::new(),
+            }
+        }
+
+        /// A key change as the event loop handles it.
+        fn key(&mut self, physical: u8, pressed: bool) {
+            let hit = key_event(
+                &self.state,
+                &self.devices,
+                &mut self.links,
+                1,
+                physical,
+                pressed,
+            );
+            let verdict = guard_key(
+                &self.state,
+                &mut self.links,
+                &self.groups,
+                1,
+                physical,
+                hit.as_ref(),
+                pressed,
+            );
+            let tools = Tools {
+                state: &self.state,
+                actions: &self.actions,
+                host: None,
+                links: &self.links,
+                results: &self.results,
+            };
+            match verdict {
+                Verdict::Pass => dispatch(&tools, &mut self.groups, 1, hit, pressed),
+                Verdict::Take => {}
+                Verdict::Fire(hit) => fire(&tools, &mut self.groups, 1, hit),
+            }
+        }
+
+        /// The loop waking `later` after now.
+        fn wake(&mut self, later: Duration) -> bool {
+            let (busy, fires) = guard_timers(&self.state, &mut self.links, Instant::now() + later);
+            let tools = Tools {
+                state: &self.state,
+                actions: &self.actions,
+                host: None,
+                links: &self.links,
+                results: &self.results,
+            };
+            for (handle, hit) in fires {
+                fire(&tools, &mut self.groups, handle, hit);
+            }
+            busy
+        }
+
+        fn ran(&self) -> Vec<String> {
+            self.jobs.try_iter().map(|(_, _, key)| key.action).collect()
+        }
+
+        fn refresh(&mut self) {
+            refresh(
+                &self.state,
+                &self.devices,
+                &mut self.renderer,
+                &mut self.links,
+                None,
+            );
+        }
+
+        fn screen(&self) -> Option<protect::Screen> {
+            self.links[&1].guard.screen(Instant::now())
+        }
+    }
+
+    fn protected(protect: Protection) -> KeyConfig {
+        let mut key = KeyConfig::new(actions::NEXT_PAGE, json!({}));
+        key.protect = Some(protect);
+        key
+    }
+
+    #[test]
+    fn a_protected_key_runs_only_after_its_hold() {
+        let mut deck = Deck::new(protected(Protection::hold()));
+        deck.key(0, true);
+        assert!(deck.ran().is_empty());
+        assert!(deck.wake(Duration::from_millis(500)));
+        assert!(deck.ran().is_empty());
+        deck.wake(Duration::from_millis(1_000));
+        assert_eq!(deck.ran(), vec![actions::NEXT_PAGE.to_owned()]);
+        deck.key(0, false);
+        deck.wake(Duration::from_secs(5));
+        assert!(deck.ran().is_empty());
+        // Released early, nothing runs.
+        deck.key(0, true);
+        deck.key(0, false);
+        deck.wake(Duration::from_secs(5));
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn an_unprotected_key_runs_on_its_press() {
+        let mut deck = Deck::new(KeyConfig::new(actions::NEXT_PAGE, json!({})));
+        deck.key(0, true);
+        assert_eq!(deck.ran().len(), 1);
+        assert!(!deck.wake(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_page_switch_ends_a_gesture_without_running() {
+        let mut deck = Deck::new(protected(Protection::hold()));
+        deck.key(0, true);
+        let id = lock(&deck.state).profiles[0].id.clone();
+        lock(&deck.state).set_page(&id, 1);
+        assert!(deck.wake(Duration::from_secs(5)));
+        assert!(deck.ran().is_empty());
+        assert_eq!(deck.links[&1].guard.pending_at(), None);
+        // Coming back does not bring the gesture back either.
+        lock(&deck.state).set_page(&id, 0);
+        assert!(!deck.wake(Duration::from_secs(5)));
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn locking_the_computer_ends_a_gesture() {
+        let mut deck = Deck::new(protected(Protection::twice()));
+        deck.key(0, true);
+        deck.key(0, false);
+        lock(&deck.state).gate.set_locked(true);
+        deck.wake(Duration::ZERO);
+        assert_eq!(deck.links[&1].guard.pending_at(), None);
+        lock(&deck.state).gate.set_locked(false);
+        // The next press arms again instead of running.
+        deck.key(0, true);
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn a_running_multi_action_stops_on_a_plain_press() {
+        let mut key = KeyConfig::new(actions::MULTI_ACTION, json!({}));
+        key.groups[0].push(KeyConfig::new(actions::DELAY, json!({"delay": 60_000})));
+        key.protect = Some(Protection::hold());
+        let mut deck = Deck::new(key);
+        let context = lock(&deck.state).context("S1", 0).unwrap();
+        deck.key(0, true);
+        deck.wake(Duration::from_secs(2));
+        deck.key(0, false);
+        assert!(deck.groups.runs.contains_key(&context));
+        deck.key(0, true);
+        assert!(deck.groups.cancelling.contains(&context));
+        deck.key(0, false);
+    }
+
+    #[test]
+    fn a_confirmation_screen_runs_on_yes_and_gives_the_page_back() {
+        let mut deck = Deck::new(protected(Protection::confirm()));
+        deck.refresh();
+        let before = deck.links[&1].sent.clone();
+        deck.key(0, true);
+        let layout = deck.screen().unwrap().layout;
+        assert_ne!(layout.yes, 0);
+        deck.refresh();
+        let yes = usize::from(layout.yes);
+        assert_eq!(
+            deck.links[&1].sent[yes],
+            Some(deck.renderer.answer_hash(Answer::Yes, None))
+        );
+        // Yes does nothing while the opening press lasts.
+        deck.key(layout.yes, true);
+        deck.key(layout.yes, false);
+        assert!(deck.ran().is_empty());
+        deck.key(0, false);
+        // Released, the protected key itself shows as it is.
+        deck.refresh();
+        assert_eq!(deck.links[&1].sent[0], before[0]);
+        deck.key(layout.yes, true);
+        assert_eq!(deck.ran(), vec![actions::NEXT_PAGE.to_owned()]);
+        deck.key(layout.yes, false);
+        assert!(deck.screen().is_none());
+        deck.wake(Duration::from_secs(1));
+        deck.refresh();
+        assert_eq!(deck.links[&1].sent, before);
+    }
+
+    #[test]
+    fn a_confirmation_screen_ends_without_running() {
+        let ends: [fn(&mut Deck, protect::Layout); 4] = [
+            |deck, layout| {
+                deck.key(layout.no, true);
+                deck.key(layout.no, false);
+            },
+            |deck, layout| {
+                deck.key(layout.back, true);
+                deck.key(layout.back, false);
+            },
+            |deck, _| {
+                deck.wake(Duration::from_secs(11));
+            },
+            |deck, _| {
+                let id = lock(&deck.state).profiles[0].id.clone();
+                lock(&deck.state).set_page(&id, 1);
+                deck.wake(Duration::ZERO);
+            },
+        ];
+        for end in ends {
+            let mut deck = Deck::new(protected(Protection::confirm()));
+            deck.refresh();
+            let before = deck.links[&1].sent.clone();
+            deck.key(0, true);
+            deck.key(0, false);
+            let layout = deck.screen().unwrap().layout;
+            deck.refresh();
+            end(&mut deck, layout);
+            assert!(deck.screen().is_none());
+            assert!(deck.ran().is_empty());
+            let id = lock(&deck.state).profiles[0].id.clone();
+            lock(&deck.state).set_page(&id, 0);
+            deck.refresh();
+            assert_eq!(deck.links[&1].sent, before);
+        }
+    }
+
+    /// Edits the page the device shows, as the editor does.
+    fn edit(deck: &Deck, change: impl FnOnce(&mut std::collections::BTreeMap<u8, KeyConfig>)) {
+        change(&mut lock(&deck.state).profiles[0].pages[0].keys);
+    }
+
+    /// Every key on the device as a fresh render of what the page is now.
+    fn shows_the_page_in_full(deck: &mut Deck) {
+        let sent = deck.links[&1].sent.clone();
+        assert!(sent.iter().all(Option::is_some));
+        deck.links.get_mut(&1).unwrap().forget_images();
+        deck.refresh();
+        assert_eq!(deck.links[&1].sent, sent);
+    }
+
+    #[test]
+    fn moving_the_key_under_a_confirmation_screen_ends_it() {
+        let mut deck = Deck::new(protected(Protection::confirm()));
+        deck.refresh();
+        deck.key(0, true);
+        deck.key(0, false);
+        let layout = deck.screen().unwrap().layout;
+        deck.refresh();
+        edit(&deck, |keys| {
+            let key = keys.remove(&0).unwrap();
+            keys.insert(3, key);
+        });
+        // The editor's refresh comes first, then the loop moves on.
+        deck.refresh();
+        deck.wake(Duration::ZERO);
+        assert!(deck.screen().is_none());
+        deck.refresh();
+        shows_the_page_in_full(&mut deck);
+        // The old Yes is just a key again and nothing ran.
+        deck.key(layout.yes, true);
+        deck.key(layout.yes, false);
+        assert!(deck.ran().is_empty());
+        // At its new place the key asks again.
+        deck.key(3, true);
+        assert!(deck.screen().is_some());
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn editing_the_page_disarms_a_key() {
+        // Moved: the armed state does not follow it, nor stay behind.
+        let mut deck = Deck::new(protected(Protection::twice()));
+        deck.refresh();
+        deck.key(0, true);
+        deck.key(0, false);
+        deck.refresh();
+        edit(&deck, |keys| {
+            let key = keys.remove(&0).unwrap();
+            keys.insert(7, key);
+        });
+        deck.refresh();
+        assert!(deck.wake(Duration::ZERO));
+        assert_eq!(deck.links[&1].guard.pending_at(), None);
+        deck.refresh();
+        shows_the_page_in_full(&mut deck);
+        deck.key(7, true);
+        deck.key(7, false);
+        assert!(deck.ran().is_empty());
+        // Deleted: dropped, and nothing runs later.
+        edit(&deck, |keys| {
+            keys.remove(&7);
+        });
+        deck.wake(Duration::ZERO);
+        assert_eq!(deck.links[&1].guard.pending_at(), None);
+        deck.wake(Duration::from_secs(10));
+        assert!(deck.ran().is_empty());
+        deck.refresh();
+        shows_the_page_in_full(&mut deck);
+        // Any other edit to the page counts too, such as a new title.
+        let mut deck = Deck::new(protected(Protection::hold()));
+        deck.key(0, true);
+        edit(&deck, |keys| {
+            keys.insert(9, KeyConfig::new(actions::HOTKEY, json!({})));
+        });
+        deck.wake(Duration::from_secs(5));
+        assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn a_confirmation_screen_keeps_the_wallpaper_on_blank_keys() {
+        let path = std::env::temp_dir().join(format!("deckly-wall-{}.png", uuid::Uuid::new_v4()));
+        RgbaImage::from_pixel(400, 300, image::Rgba([20, 160, 90, 255]))
+            .save(&path)
+            .unwrap();
+        let mut deck = Deck::new(protected(Protection::confirm()));
+        lock(&deck.state).profiles[0].wallpaper = Some(Wallpaper::new(path.clone()));
+        deck.refresh();
+        let before = deck.links[&1].sent.clone();
+        deck.key(0, true);
+        deck.key(0, false);
+        let layout = deck.screen().unwrap().layout;
+        deck.refresh();
+        let sent = deck.links[&1].sent.clone();
+        for index in 1..15 {
+            if [layout.yes, layout.no, layout.back].contains(&index) {
+                continue;
+            }
+            // Empty keys look the same with the screen up and without.
+            assert_eq!(sent[usize::from(index)], before[usize::from(index)]);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_disconnect_takes_the_gesture_with_it() {
+        let mut deck = Deck::new(protected(Protection::confirm()));
+        deck.key(0, true);
+        assert!(deck.screen().is_some());
+        deck.links.remove(&1);
+        assert!(!deck.wake(Duration::from_secs(60)));
+        assert!(deck.ran().is_empty());
     }
 }

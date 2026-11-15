@@ -2,6 +2,29 @@
 
 All notable changes to Deckly. Newest first.
 
+## Unreleased
+
+### Keys
+
+- **Protect a key from accidental presses.** The shield at the top right of
+  the key form (or **Protect…** in a key's right-click menu) makes an
+  important key, such as one that shuts the computer down, ask for a
+  deliberate gesture first. A brush of the key runs nothing.
+  - **Hold to run** (recommended): hold the key for a set time (1 s by
+    default, 0.3–5 s). A ring fills over the key; letting go early cancels.
+  - **Press twice**: the first press arms the key and shows "Again" with a
+    countdown; a second press within the window (3 s by default, 1–10 s)
+    runs it. Any other key disarms it.
+  - **Confirm screen**: the device asks Yes, No or Back in place of the
+    page, over the page's wallpaper, and closes by itself after a set time
+    (10 s by default, 3–30 s). **Shuffle button positions** places the
+    answers anew each time.
+  - Works for every kind of key: built-in actions, Multi Actions, folders
+    and plugin actions. A plugin hears its key only once the gesture is
+    complete. Editing the page, changing page, folder or profile, locking
+    the computer or unplugging the device cancels a gesture. Protected keys show a shield
+    in the editor.
+
 ## 0.0.5 — Plugins in Rust
 
 Deckly now has its own plugin system: write a plugin in Rust, start it with
