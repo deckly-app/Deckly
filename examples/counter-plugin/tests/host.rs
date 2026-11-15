@@ -27,9 +27,13 @@ fn assemble(dir: &Path) -> PathBuf {
     let program = PathBuf::from(env!("CARGO_BIN_EXE_counter-plugin"));
     let name = program.file_name().unwrap();
     std::fs::copy(&program, dir.join(name)).unwrap();
-    std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/counter.svg"),
+    // The icon is built into the test, not read from the source folder at run
+    // time: Cargo does not rebuild a test when only `CARGO_MANIFEST_DIR`
+    // changes, so a test built in another checkout that shares this target
+    // folder keeps that checkout's path and fails once it is deleted.
+    std::fs::write(
         dir.join("assets/counter.svg"),
+        include_bytes!("../assets/counter.svg"),
     )
     .unwrap();
     // The manifest as the plugin itself describes it.

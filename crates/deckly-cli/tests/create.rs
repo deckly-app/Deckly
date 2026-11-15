@@ -11,8 +11,14 @@ use std::process::{Command, Output};
 const CLI: &str = env!("CARGO_BIN_EXE_deckly-cli");
 
 /// The repository root, which holds crates/deckly-sdk.
+///
+/// Read at run time: the path built in by `env!` is not rebuilt when it
+/// changes, so a test built in another checkout that shares the target folder
+/// would point there.
 fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").into())
         .ancestors()
         .nth(2)
         .unwrap()

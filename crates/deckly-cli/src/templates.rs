@@ -296,11 +296,14 @@ mod tests {
                 }
             }
         }
+        // The folder Cargo runs this test for, read at run time: the path
+        // built in by `env!` is not rebuilt when it changes, so a test built
+        // in another checkout that shares the target folder would look there.
+        let crate_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").into());
         let mut found = Vec::new();
-        walk(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates"),
-            &mut found,
-        );
+        walk(&crate_dir.join("templates"), &mut found);
         assert_eq!(found, Vec::<String>::new());
     }
 }
