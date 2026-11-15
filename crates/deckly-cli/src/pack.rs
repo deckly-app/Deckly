@@ -116,8 +116,12 @@ fn write_zip(out: &Path, id: &str, files: &BTreeMap<String, Entry>) -> Result<()
         let mut zip = zip::ZipWriter::new(file);
         for (rel, entry) in files {
             let mode = if entry.executable { 0o755 } else { 0o644 };
+            // Unix as the system on every host: on Windows the crate would
+            // write DOS, and readers then ignore the mode, so a program
+            // packed on Windows would not run on Linux or macOS.
             let options = SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated)
+                .system(zip::System::Unix)
                 .unix_permissions(mode);
             zip.start_file(format!("{id}/{rel}"), options)
                 .and_then(|()| zip.write_all(&entry.bytes).map_err(Into::into))

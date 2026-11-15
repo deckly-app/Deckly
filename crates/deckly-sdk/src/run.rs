@@ -556,14 +556,17 @@ fn dispatch(makers: &[Maker], shared: &Common, handlers: &Handlers, rx: Receiver
                     slot.tick(generation);
                 }
             }
-            Event::Redraw => {
-                if shared.waker.take() {
-                    for slot in keys.values() {
-                        slot.redraw();
-                    }
-                }
-            }
+            // Changes from another thread; handlers' own changes are drawn
+            // below, so this one may find nothing to do.
+            Event::Redraw => {}
             Event::End => break,
+        }
+        // A handler that changed a shared value has the keys drawn before
+        // the next event, rather than after whatever is already queued.
+        if shared.waker.take() {
+            for slot in keys.values() {
+                slot.redraw();
+            }
         }
     }
     for (_, mut slot) in keys.drain() {
