@@ -659,7 +659,15 @@ impl Preferences {
                     supported by Elgato or Corsair.";
         value_dim(ui, o, VALUE_X, 429.0, 440.0, text);
 
-        footer(ui, o, "Deckly is built with Rust and egui.");
+        match update::LOCAL_BUILD {
+            // The version row has no room for the commit.
+            Some(build) => footer(
+                ui,
+                o,
+                &format!("Local build {build}. Deckly is built with Rust and egui."),
+            ),
+            None => footer(ui, o, "Deckly is built with Rust and egui."),
+        }
     }
 
     /// "Open automatically at login", and next to it "Start in tray at

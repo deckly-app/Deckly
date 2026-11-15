@@ -10,6 +10,8 @@
 //! - macOS install script: the app bundle is replaced.
 //! - A package manager (AUR, Homebrew, winget) or a source build: Deckly
 //!   only says how to update, so it never fights the package manager.
+//! - A local build installed by `cargo dev install`: the same, so an older
+//!   release never replaces unreleased work.
 //!
 //! Downloads use the system's `curl` and `tar`, as Node.js downloads do, and
 //! are checked against the release's `SHA256SUMS` before anything changes.
@@ -142,10 +144,12 @@ pub struct Updater {
 
 impl Updater {
     pub fn new(work_dir: Option<PathBuf>, repaint: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let method = std::env::current_exe()
-            .and_then(std::fs::canonicalize)
-            .map(|exe| method_for(&exe, Os::CURRENT, &|p| p.exists()))
-            .unwrap_or(Method::Manual(DOWNLOAD_HINT));
+        let method = method_of(LOCAL_BUILD, || {
+            std::env::current_exe()
+                .and_then(std::fs::canonicalize)
+                .map(|exe| method_for(&exe, Os::CURRENT, &|p| p.exists()))
+                .unwrap_or(Method::Manual(DOWNLOAD_HINT))
+        });
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 status: Status::Idle,
@@ -275,6 +279,35 @@ impl Updater {
 
 const DOWNLOAD_HINT: &str = "Download the new version from the release page.";
 const SOURCE_HINT: &str = "This Deckly was built from source: pull the new version and rebuild.";
+const LOCAL_HINT: &str = "This Deckly is a local build: pull the new version and run \
+                          cargo dev install, or install the release with install.sh.";
+
+/// Set by `cargo dev install` while it builds: the commit of this local
+/// build, with `-dirty` when the checkout had uncommitted changes. Release
+/// builds leave it unset.
+pub const LOCAL_BUILD: Option<&str> = option_env!("DECKLY_LOCAL_BUILD");
+
+/// This Deckly's version as people see it: a local build names its commit.
+pub fn version_label() -> String {
+    label_for(env!("CARGO_PKG_VERSION"), LOCAL_BUILD)
+}
+
+/// A local build sits where a release install goes (`cargo dev install`),
+/// so it never updates itself: that would replace unreleased work with an
+/// older release.
+fn method_of(local_build: Option<&str>, detect: impl FnOnce() -> Method) -> Method {
+    match local_build {
+        Some(_) => Method::Manual(LOCAL_HINT),
+        None => detect(),
+    }
+}
+
+fn label_for(version: &str, local_build: Option<&str>) -> String {
+    match local_build.filter(|b| !b.is_empty()) {
+        Some(build) => format!("{version} (local build {build})"),
+        None => version.to_owned(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Os {
@@ -769,6 +802,26 @@ mod tests {
             assert!(!installed.join(format!("{name}.new")).exists());
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_builds_name_their_commit() {
+        assert_eq!(label_for("0.0.5", None), "0.0.5");
+        assert_eq!(label_for("0.0.5", Some("")), "0.0.5");
+        assert_eq!(
+            label_for("0.0.5", Some("3081821-dirty")),
+            "0.0.5 (local build 3081821-dirty)"
+        );
+    }
+
+    #[test]
+    fn local_builds_never_update_themselves() {
+        let folder = || Method::Folder(PathBuf::from("/home/me/.local/lib/deckly"));
+        assert_eq!(
+            method_of(Some("3081821"), folder),
+            Method::Manual(LOCAL_HINT)
+        );
+        assert_eq!(method_of(None, folder), folder());
     }
 
     #[test]

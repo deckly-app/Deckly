@@ -3666,7 +3666,7 @@ fn banner_message(ui: &mut Ui, view: &BannerView, wrap: bool) -> Rect {
             ui.label(RichText::new(icon::ARROW_CIRCLE_UP).color(ACCENT));
             RichText::new(format!(
                 "Deckly {latest} is available. You have {}.",
-                env!("CARGO_PKG_VERSION")
+                update::version_label()
             ))
         }
         BannerView::Downloading { latest } => {

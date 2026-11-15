@@ -80,65 +80,17 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     }
     let out = out.unwrap_or_else(|| root.join("dist"));
 
-    build(root, &target)?;
-    let bin = root.join("target").join(&target).join("release");
+    build(root, &target, Profile::Release, &[])?;
+    let bin = Profile::Release.dir(root, &target);
 
     let stem = format!("deckly-{target}");
     let stage = out.join(&stem);
-    if stage.exists() {
-        fs::remove_dir_all(&stage).map_err(|e| format!("cannot clear {}: {e}", stage.display()))?;
-    }
     let version = env!("CARGO_PKG_VERSION");
-    let program_dir = match os {
-        Os::Mac => {
-            let contents = stage.join("Deckly.app").join("Contents");
-            let plist =
-                include_str!("../../packaging/macos/Info.plist.in").replace("@VERSION@", version);
-            write(&contents.join("Info.plist"), plist.as_bytes())?;
-            contents.join("MacOS")
-        }
-        Os::Linux | Os::Windows => stage.clone(),
-    };
-    for name in ["deckly", "deckly-web"] {
-        let exe = os.exe(name);
-        copy(&bin.join(&exe), &program_dir.join(&exe))?;
-    }
-    if os == Os::Linux {
-        let assets = root.join("assets");
-        copy(
-            &assets.join("linux/deckly.desktop"),
-            &stage.join("share/applications/deckly.desktop"),
-        )?;
-        copy(
-            &assets.join("logo/deckly.svg"),
-            &stage.join("share/icons/hicolor/scalable/apps/deckly.svg"),
-        )?;
-        copy(
-            &assets.join("linux/60-deckly.rules"),
-            &stage.join("udev/60-deckly.rules"),
-        )?;
-    }
-    if os == Os::Windows {
-        // The Start menu entry and the setup take their icon from here.
-        copy(
-            &root.join("assets/windows/deckly.ico"),
-            &stage.join("deckly.ico"),
-        )?;
-    }
+    stage_programs(root, os, &bin, &stage, version)?;
     copy(&root.join("LICENSE"), &stage.join("LICENSE"))?;
     copy(&root.join("README.md"), &stage.join("README.md"))?;
     let notices = licenses::third_party(root, &target)?;
     write(&stage.join("THIRD-PARTY-LICENSES.txt"), notices.as_bytes())?;
-    if os == Os::Mac && cfg!(target_os = "macos") {
-        // Ad-hoc signature: free, lets the bundle run on Apple Silicon, but
-        // is not a Developer ID signature, so Gatekeeper still asks.
-        status(
-            Command::new("codesign")
-                .args(["--force", "--deep", "--sign", "-"])
-                .arg(stage.join("Deckly.app")),
-            "codesign",
-        )?;
-    }
 
     let archive = out.join(archive_name(&target)?);
     if archive.exists() {
@@ -198,7 +150,7 @@ fn windows_setup(root: &Path, out: &Path, stage: &Path, version: &str) -> Result
 }
 
 /// The target triple of this computer, from `rustc -vV`.
-fn host_target() -> Result<String, String> {
+pub fn host_target() -> Result<String, String> {
     let output = Command::new("rustc")
         .arg("-vV")
         .output()
@@ -210,15 +162,127 @@ fn host_target() -> Result<String, String> {
         .ok_or_else(|| "rustc did not report the host target".to_owned())
 }
 
-fn build(root: &Path, target: &str) -> Result<(), String> {
-    status(
-        Command::new(cargo())
-            .args(["build", "--release", "--locked"])
-            .args(["--package", "deckly", "--package", "deckly-web"])
-            .args(["--target", target])
-            .current_dir(root),
-        "cargo build",
-    )
+/// The programs of a Deckly install, in the program folder.
+pub const PROGRAMS: [&str; 2] = ["deckly", "deckly-web"];
+
+/// Linux: the desktop files of an install, from the checkout (relative to
+/// the workspace) to the staged folder. The staged path is also the path
+/// under the install prefix, as `install.sh` puts them.
+pub const LINUX_SHARE: [(&str, &str); 2] = [
+    (
+        "assets/linux/deckly.desktop",
+        "share/applications/deckly.desktop",
+    ),
+    (
+        "assets/logo/deckly.svg",
+        "share/icons/hicolor/scalable/apps/deckly.svg",
+    ),
+];
+
+/// Linux: the device rules, from the checkout to the staged folder.
+pub const LINUX_UDEV_RULES: (&str, &str) = ("assets/linux/60-deckly.rules", "udev/60-deckly.rules");
+
+/// Set while building, marks the app as a local build with this text (the
+/// commit); the app reads it with `option_env!`.
+pub const LOCAL_BUILD_ENV: &str = "DECKLY_LOCAL_BUILD";
+
+/// The Cargo profile the programs are built with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Profile {
+    Release,
+    Debug,
+}
+
+impl Profile {
+    /// Where Cargo puts the programs of `target` built with this profile.
+    pub fn dir(self, root: &Path, target: &str) -> PathBuf {
+        let name = match self {
+            Self::Release => "release",
+            Self::Debug => "debug",
+        };
+        root.join("target").join(target).join(name)
+    }
+}
+
+/// Builds the packages a release holds for `target`, with `env` set for
+/// the compiler.
+pub fn build(
+    root: &Path,
+    target: &str,
+    profile: Profile,
+    env: &[(&str, &str)],
+) -> Result<(), String> {
+    let mut command = Command::new(cargo());
+    command
+        .args(["build", "--locked"])
+        .args((profile == Profile::Release).then_some("--release"))
+        .args(["--package", "deckly", "--package", "deckly-web"])
+        .args(["--target", target])
+        // Only `cargo dev install` marks a build as local.
+        .env_remove(LOCAL_BUILD_ENV)
+        .envs(env.iter().copied())
+        .current_dir(root);
+    status(&mut command, "cargo build")
+}
+
+/// The folder in `stage` that holds the programs.
+pub fn program_dir(os: Os, stage: &Path) -> PathBuf {
+    match os {
+        Os::Mac => stage.join("Deckly.app").join("Contents").join("MacOS"),
+        Os::Linux | Os::Windows => stage.to_path_buf(),
+    }
+}
+
+/// Writes what a Deckly install consists of into an empty `stage`: the
+/// programs from `bin`, and the desktop files, icons, device rules or app
+/// bundle of `os`. The release archive adds the license texts to this;
+/// `cargo dev install` installs from it.
+pub fn stage_programs(
+    root: &Path,
+    os: Os,
+    bin: &Path,
+    stage: &Path,
+    version: &str,
+) -> Result<(), String> {
+    if stage.exists() {
+        fs::remove_dir_all(stage).map_err(|e| format!("cannot clear {}: {e}", stage.display()))?;
+    }
+    if os == Os::Mac {
+        let plist =
+            include_str!("../../packaging/macos/Info.plist.in").replace("@VERSION@", version);
+        write(
+            &stage.join("Deckly.app/Contents/Info.plist"),
+            plist.as_bytes(),
+        )?;
+    }
+    let program_dir = program_dir(os, stage);
+    for name in PROGRAMS {
+        let exe = os.exe(name);
+        copy(&bin.join(&exe), &program_dir.join(&exe))?;
+    }
+    if os == Os::Linux {
+        for (from, to) in LINUX_SHARE.into_iter().chain([LINUX_UDEV_RULES]) {
+            copy(&root.join(from), &stage.join(to))?;
+        }
+    }
+    if os == Os::Windows {
+        // The Start menu entry and the setup take their icon from here.
+        copy(
+            &root.join("assets/windows/deckly.ico"),
+            &stage.join("deckly.ico"),
+        )?;
+    }
+    if os == Os::Mac && cfg!(target_os = "macos") {
+        // Ad-hoc signature: free, lets the bundle run on Apple Silicon, but
+        // is not a Developer ID signature, so Gatekeeper still asks.
+        status(
+            Command::new("codesign")
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(stage.join("Deckly.app")),
+            "codesign",
+        )?;
+    }
+    Ok(())
 }
 
 /// Packs `out/<stem>` into `archive`: a zip for Windows, tar.gz elsewhere.
@@ -261,7 +325,7 @@ fn status(command: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
-fn create_parent(path: &Path) -> Result<(), String> {
+pub fn create_parent(path: &Path) -> Result<(), String> {
     match path.parent() {
         Some(dir) => {
             fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))
@@ -270,14 +334,14 @@ fn create_parent(path: &Path) -> Result<(), String> {
     }
 }
 
-fn copy(from: &Path, to: &Path) -> Result<(), String> {
+pub fn copy(from: &Path, to: &Path) -> Result<(), String> {
     create_parent(to)?;
     fs::copy(from, to)
         .map(|_| ())
         .map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()))
 }
 
-fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     create_parent(path)?;
     fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
