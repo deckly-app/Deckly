@@ -3,8 +3,8 @@
 Every public type and method, generated from the source by rustdoc:
 
 - [**deckly_sdk**](https://deckly-app.github.io/Deckly/api/deckly_sdk/):
-  `Plugin`, `Action`, `Key`, `Face`, `Image`, `Form`, `Globals`, the test
-  `Harness`.
+  `Plugin`, `Action`, `Key`, `Face`, `Image`, `Form`, `Globals`, `Shared`,
+  `Running`, the test `Harness`.
 - [**deckly_plugin_protocol**](https://deckly-app.github.io/Deckly/api/deckly_plugin_protocol/):
   the messages, the manifest and the limits. The SDK re-exports it as
   `deckly_sdk::protocol`.
@@ -17,8 +17,8 @@ use:
 
 ```rust
 use deckly_sdk::prelude::*;
-// Action, Choice, Color, Face, Form, Globals, Image, Key, Plugin, State,
-// and serde's Serialize and Deserialize.
+// Action, Choice, Color, Face, Form, Globals, Image, Key, Plugin, Running,
+// Shared, State, and serde's Serialize and Deserialize.
 # fn main() {}
 ```
 

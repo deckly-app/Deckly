@@ -2,6 +2,7 @@
 //! timer thread, and the dispatcher that calls the actions.
 
 use crate::key::{KeyInner, Output, TimerCtl};
+use crate::shared::{Running, Store, Waker};
 use crate::{
     Action, ButtonHandler, ChoicesHandler, Error, Globals, GlobalsHandler, Key, Plugin, Result,
     SDK_VERSION,
@@ -24,15 +25,22 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 enum Event {
     Host(HostMessage),
-    Tick { context: String, generation: u64 },
+    Tick {
+        context: String,
+        generation: u64,
+    },
+    /// A [`crate::Shared`] value changed.
+    Redraw,
     End,
 }
 
 /// What every new key needs.
-pub(crate) struct Shared {
+pub(crate) struct Common {
     out: Arc<Output>,
     timers: Sender<TimerCtl>,
     globals: Globals,
+    store: Arc<Store>,
+    waker: Arc<Waker>,
 }
 
 /// One key with its action value, behind a type-erased face.
@@ -45,6 +53,8 @@ pub(crate) trait Slot: Send {
     fn tick(&mut self, generation: u64);
     fn button(&mut self, info: KeyInfo, field: &str);
     fn globals_changed(&mut self);
+    /// Asks the face again after a shared value changed.
+    fn redraw(&self);
     /// Ends a key made only to answer a button, without `key_disappear`.
     fn discard(&mut self);
 }
@@ -56,7 +66,7 @@ type ChoicesFn = fn(&str, &Value, &Globals) -> std::result::Result<Vec<Choice>, 
 pub(crate) struct Maker {
     /// The full action id.
     id: String,
-    make: fn(KeyInfo, &Shared, bool) -> Box<dyn Slot>,
+    make: fn(KeyInfo, &Common, bool) -> Box<dyn Slot>,
     choices: ChoicesFn,
 }
 
@@ -77,7 +87,7 @@ fn choices_of<A: Action>(
     A::choices(field, &settings, globals)
 }
 
-fn make<A: Action>(info: KeyInfo, shared: &Shared, shown: bool) -> Box<dyn Slot> {
+fn make<A: Action>(info: KeyInfo, shared: &Common, shown: bool) -> Box<dyn Slot> {
     let settings = read_settings::<A>(&info);
     let key = Key::<A>::new(KeyInner {
         context: info.context.clone(),
@@ -89,6 +99,7 @@ fn make<A: Action>(info: KeyInfo, shared: &Shared, shown: bool) -> Box<dyn Slot>
         out: shared.out.clone(),
         timers: shared.timers.clone(),
         globals: shared.globals.clone(),
+        store: shared.store.clone(),
     });
     Box::new(Instance {
         action: A::default(),
@@ -198,6 +209,10 @@ impl<A: Action> Slot for Instance<A> {
         self.draw();
     }
 
+    fn redraw(&self) {
+        self.draw();
+    }
+
     fn discard(&mut self) {
         self.key.stop_timer();
         self.key.inner.alive.store(false, Ordering::Relaxed);
@@ -263,11 +278,24 @@ where
         let events = events.clone();
         move || run_timers(timer_rx, events)
     })?;
-    drop(events);
-    let shared = Shared {
+    // A handle may outlive the run loop; its wake then goes nowhere.
+    let waker = Arc::new(Waker::new(move || {
+        let _ = events.send(Event::Redraw);
+    }));
+    let store = Arc::new(Store::new(waker.clone()));
+    let mut plugin = plugin;
+    if let Some(start) = plugin.on_start.take() {
+        start(&Running {
+            store: store.clone(),
+            globals: globals.clone(),
+        });
+    }
+    let shared = Common {
         out,
         timers,
         globals,
+        store,
+        waker,
     };
     let handlers = Handlers {
         button: plugin.on_button.clone(),
@@ -435,7 +463,7 @@ fn run_timers(rx: Receiver<TimerCtl>, events: Sender<Event>) {
     }
 }
 
-fn dispatch(makers: &[Maker], shared: &Shared, handlers: &Handlers, rx: Receiver<Event>) {
+fn dispatch(makers: &[Maker], shared: &Common, handlers: &Handlers, rx: Receiver<Event>) {
     let mut keys: HashMap<String, Box<dyn Slot>> = HashMap::new();
     let make = |info: &KeyInfo, shown: bool| {
         makers
@@ -526,6 +554,13 @@ fn dispatch(makers: &[Maker], shared: &Shared, handlers: &Handlers, rx: Receiver
             } => {
                 if let Some(slot) = keys.get_mut(&context) {
                     slot.tick(generation);
+                }
+            }
+            Event::Redraw => {
+                if shared.waker.take() {
+                    for slot in keys.values() {
+                        slot.redraw();
+                    }
                 }
             }
             Event::End => break,

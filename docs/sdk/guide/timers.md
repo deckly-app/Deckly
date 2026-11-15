@@ -92,22 +92,11 @@ still be running.
 ## State shared by every key
 
 Per-key state is a field of the action. State the whole plugin shares, such
-as a connection to OBS, lives outside the actions: a `static` with a
-`Mutex` or `OnceLock`, or a type you keep in one. Settings that the user
-edits for the whole plugin are [global settings](global-settings.md).
-
-```rust
-# use deckly_sdk::prelude::*;
-use std::sync::{Mutex, OnceLock};
-
-struct Connection { /* a socket, a client */ }
-
-fn connection() -> &'static Mutex<Option<Connection>> {
-    static CONNECTION: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
-    CONNECTION.get_or_init(|| Mutex::new(None))
-}
-# fn main() { let _ = connection(); }
-```
+as what a streaming app last reported, is a [`Shared`
+value](shared-state.md): every key reads the same one, a thread of your own
+can change it, and the keys are drawn again after each change. Settings
+that the user edits for the whole plugin are [global
+settings](global-settings.md).
 
 ## When the plugin stops
 

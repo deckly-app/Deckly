@@ -48,6 +48,7 @@ mod globals;
 mod key;
 mod run;
 mod settings;
+mod shared;
 pub mod testing;
 
 pub use deckly_plugin_protocol as protocol;
@@ -55,6 +56,7 @@ pub use deckly_plugin_protocol::{Choice, Color, Face, ManifestState as State};
 pub use form::Form;
 pub use globals::Globals;
 pub use key::{Image, Key};
+pub use shared::{Running, Shared};
 
 use deckly_plugin_protocol::{Manifest, ManifestAction, PROTOCOL, Validate};
 use serde::Serialize;
@@ -65,7 +67,9 @@ use std::sync::Arc;
 
 /// What a plugin author usually needs.
 pub mod prelude {
-    pub use crate::{Action, Choice, Color, Face, Form, Globals, Image, Key, Plugin, State};
+    pub use crate::{
+        Action, Choice, Color, Face, Form, Globals, Image, Key, Plugin, Running, Shared, State,
+    };
     pub use serde::{Deserialize, Serialize};
 }
 
@@ -76,6 +80,8 @@ pub type ChoicesHandler =
 pub type ButtonHandler = Arc<dyn Fn(&str, &Globals) + Send + Sync>;
 /// Hears that the global settings changed.
 pub type GlobalsHandler = Arc<dyn Fn(&Globals) + Send + Sync>;
+/// Runs once when the plugin starts.
+pub type StartHandler = Box<dyn FnOnce(&Running) + Send>;
 
 /// The SDK version, written into `ready` and the manifest.
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -178,8 +184,9 @@ pub trait Action: Default + Send + 'static {
     fn global_settings_changed(&mut self, _key: &Key<Self>) {}
 
     /// What the key shows, drawn by Deckly. The SDK asks after the key
-    /// appears and after every event and tick, and sends the face only when
-    /// it differs from the one shown. `None`, the default, leaves the key
+    /// appears, after every event and tick, and after any change to a
+    /// [`Shared`] value, and sends the face only when it differs from the
+    /// one shown. `None`, the default, leaves the key
     /// to [`Key::set_face`] and the other `set_` calls.
     fn face(&self, _key: &Key<Self>) -> Option<Face> {
         None
@@ -240,6 +247,7 @@ pub struct Plugin {
     pub(crate) on_choices: Option<ChoicesHandler>,
     pub(crate) on_button: Option<ButtonHandler>,
     pub(crate) on_globals: Option<GlobalsHandler>,
+    pub(crate) on_start: Option<StartHandler>,
 }
 
 impl Plugin {
@@ -260,6 +268,7 @@ impl Plugin {
             on_choices: None,
             on_button: None,
             on_globals: None,
+            on_start: None,
         }
     }
 
@@ -356,6 +365,27 @@ impl Plugin {
         handler: impl Fn(&Globals) + Send + Sync + 'static,
     ) -> Self {
         self.on_globals = Some(Arc::new(handler));
+        self
+    }
+
+    /// Runs once when the plugin starts, before any key appears, on the
+    /// thread that handles key events. The place to start a thread that
+    /// listens to another program and changes a [`Shared`] value:
+    ///
+    /// ```no_run
+    /// # use deckly_sdk::prelude::*;
+    /// #[derive(Default)]
+    /// struct Status {
+    ///     online: bool,
+    /// }
+    ///
+    /// let plugin = Plugin::new("com.example.status", "Status").on_start(|plugin| {
+    ///     let status = plugin.shared::<Status>();
+    ///     std::thread::spawn(move || status.update(|s| s.online = true));
+    /// });
+    /// ```
+    pub fn on_start(mut self, handler: impl FnOnce(&Running) + Send + 'static) -> Self {
+        self.on_start = Some(Box::new(handler));
         self
     }
 
@@ -458,6 +488,7 @@ mod book {
         Actions = "guide/actions.md",
         Drawing = "guide/drawing.md",
         Timers = "guide/timers.md",
+        SharedState = "guide/shared-state.md",
         Settings = "guide/settings.md",
         Forms = "guide/forms.md",
         GlobalSettings = "guide/global-settings.md",

@@ -119,7 +119,8 @@ Every handler has an empty default; implement the ones you need.
 | `button` | The user pressed a button in the key's [form](forms.md). |
 | `global_settings_changed` | The plugin's [global settings](global-settings.md) changed. |
 
-After each of them the SDK calls `face`, which returns what the key shows
+After each of them, and after a change to a [shared value](shared-state.md),
+the SDK calls `face`, which returns what the key shows
 (see [Drawing keys](drawing.md#faces)). Two more are not about one key:
 `form` describes the settings form, and `choices` lists the options of a
 dynamic choice. See [Settings forms](forms.md).
@@ -145,6 +146,7 @@ Each handler gets a [`Key`]. It is the handle for that one key:
 | `show_ok`, `show_alert` | A short success or failure mark. |
 | `settings`, `set_settings`, `update_settings` | The key's settings. |
 | `globals` | The plugin's global settings. |
+| `shared::<T>()` | The plugin's [shared state](shared-state.md) of type `T`. |
 | `every`, `stop_timer` | A timer that calls `tick`. |
 | `column`, `row`, `device` | Where the key is. |
 | `state` | The state Deckly last reported. |
