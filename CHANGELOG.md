@@ -40,6 +40,14 @@ plugins keep running as before.
 - The key settings sit in the centre of the panel.
 - Long plugin settings forms scroll.
 
+### Install
+
+- **Homebrew tap moved.** Install with `brew install deckly-app/tap/deckly`.
+  Macs that tapped `auuruum/tap` keep getting updates.
+- **Windows setup in one click.** The README links straight to
+  `deckly-setup-windows-x64.exe`; PowerShell is no longer the only way shown.
+- The Windows installer names Deckly as the publisher.
+
 ## 0.0.4 — Make it yours
 
 Wallpapers that follow you everywhere, feedback marks in your own style, and
