@@ -2,6 +2,42 @@
 
 All notable changes to Deckly. Newest first.
 
+## 0.0.5 — Plugins in Rust
+
+Deckly now has its own plugin system: write a plugin in Rust, start it with
+one command, and set it up from Deckly's own settings forms. Stream Deck SDK
+plugins keep running as before.
+
+### Deckly plugins
+
+- **Deckly plugins.** A new kind of plugin, written in Rust with the
+  `deckly-sdk` crate. Deckly runs them over pipes instead of a WebSocket.
+  A plugin can draw a key's face (title, icon, colours, marks) without
+  sending images, and keep plugin-wide state that redraws its keys.
+- **Settings without a web view.** A plugin describes its fields and Deckly
+  draws the form: one per action in the key editor and one per plugin in the
+  Plugins tab, with choices the plugin fills in and buttons it answers.
+- **Secrets stay secret.** Passwords and tokens a plugin asks for go to the
+  system's secret store (Credential Manager, the Keychain, the Secret
+  Service) or a private file, never into a profile, an export or a backup.
+- **Install from a file.** Plugins tab > **Add File…**, or drop the file on
+  the window, installs a `.decklyPlugin`, `.streamDeckPlugin` or `.zip`.
+- **Development plugins.** A plugin linked from its project folder is marked
+  "Development" and restarts from a fresh build.
+
+### For plugin authors
+
+- **`deckly-cli`** (also `cargo deckly`): `create` starts a new plugin from
+  a template (Counter or Minimal), then `build`, `dev`, `link`, `validate`,
+  `pack` and `log`.
+- **The Plugin SDK book**, with getting started, guides and a reference, at
+  <https://deckly-app.github.io/Deckly/>.
+
+### Fixes
+
+- The key settings sit in the centre of the panel.
+- Long plugin settings forms scroll.
+
 ## 0.0.4 — Make it yours
 
 Wallpapers that follow you everywhere, feedback marks in your own style, and
