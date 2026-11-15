@@ -110,6 +110,7 @@ pub(crate) struct KeyInner<S> {
     pub(crate) out: Arc<Output>,
     pub(crate) timers: Sender<TimerCtl>,
     pub(crate) globals: crate::Globals,
+    pub(crate) store: Arc<crate::shared::Store>,
 }
 
 /// One key showing an action. Cheap to clone, and `Send`: hand it to a
@@ -223,6 +224,12 @@ impl<A: Action> Key<A> {
     /// The plugin's global settings, shared by every key.
     pub fn globals(&self) -> &crate::Globals {
         &self.inner.globals
+    }
+
+    /// The plugin's shared `T`, the same for every key and thread; see
+    /// [`Shared`](crate::Shared). Changing it redraws every key.
+    pub fn shared<T: Default + Send + 'static>(&self) -> crate::Shared<T> {
+        self.inner.store.get()
     }
 
     /// Whether the key is still shown; false after it disappeared.

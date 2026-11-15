@@ -9,6 +9,7 @@
 - [Actions and keys](guide/actions.md)
 - [Drawing keys](guide/drawing.md)
 - [Timers and threads](guide/timers.md)
+- [Shared state and background events](guide/shared-state.md)
 - [Settings](guide/settings.md)
 - [Settings forms](guide/forms.md)
 - [Global settings and secrets](guide/global-settings.md)

@@ -125,9 +125,9 @@ the [design draft](docs/plugin-sdk.md).
 - [x] Deckly plugins in the host: pipes instead of a WebSocket.
 - [x] `deckly-sdk`: a Rust crate for writing plugins. Done: actions, typed
       settings, titles, states, faces, images, marks, a per-key timer,
-      settings forms, typed global settings (`Globals`), `--describe` and a
-      test harness. Not yet: plugin-wide state other than settings (statics
-      do for now).
+      settings forms, typed global settings (`Globals`), plugin-wide shared
+      state (`Shared<T>`, redrawn on change from any thread, `on_start` to
+      start a listener), `--describe` and a test harness.
 - [x] SDK docs for plugin authors: the book in `docs/sdk` (getting started,
       guides, reference), the API reference and `llms.txt`, published on
       GitHub Pages from `dev` (`cargo dev book`). Examples in it are tested.

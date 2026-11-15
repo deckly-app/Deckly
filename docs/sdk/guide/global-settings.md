@@ -55,6 +55,7 @@ fn main() -> deckly_sdk::Result<()> {
 | `on_button(\|button, globals\| ...)` | Answers a button of that form. |
 | `on_choices(\|field, globals\| ...)` | Lists the options of a dynamic choice in that form. Runs on its own thread. |
 | `on_global_settings(\|globals\| ...)` | Hears that the global settings changed, before the keys do. |
+| `on_start(\|plugin\| ...)` | Runs once at the start; see [Shared state](shared-state.md). |
 
 ## Reading and storing
 
