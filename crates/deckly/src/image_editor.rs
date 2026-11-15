@@ -3,6 +3,7 @@
 
 mod composition;
 mod history;
+mod suggest;
 
 use crate::history::Direction;
 use crate::store;
@@ -105,6 +106,8 @@ pub struct Editor {
     query: String,
     logos_only: bool,
     selected_icon: Option<usize>,
+    /// Catalog positions of the icons that fit the key, best first.
+    suggested: Vec<usize>,
     adding_icon: bool,
     draft: Composition,
     selected_layer: Option<usize>,
@@ -136,7 +139,13 @@ impl Editor {
     }
 
     fn with_original(context: String, original: Original, mode: Mode) -> Self {
-        let transparent = original.is_page();
+        let suggested = match &original {
+            Original::Key(key) => suggest::suggestions(key)
+                .into_iter()
+                .filter_map(suggest::index_of)
+                .collect(),
+            Original::Page { .. } => Vec::new(),
+        };
         Self {
             context,
             original,
@@ -144,9 +153,12 @@ impl Editor {
             query: String::new(),
             logos_only: false,
             selected_icon: None,
+            suggested,
             adding_icon: false,
+            // Every new picture starts transparent: with no wallpaper the
+            // device shows black behind it, with one the wallpaper.
             draft: Composition {
-                transparent,
+                transparent: true,
                 ..Default::default()
             },
             selected_layer: None,
@@ -554,6 +566,29 @@ impl Editor {
             reset_scroll |= ui.checkbox(&mut self.logos_only, "Logos only").changed();
         });
         let matches = search_icons(&self.query, self.logos_only);
+        let columns = 8;
+        let side = 76.0;
+        let spacing = ui.spacing().item_spacing;
+        let suggested: Vec<usize> = if self.query.trim().is_empty() {
+            self.suggested
+                .iter()
+                .copied()
+                .filter(|&i| !self.logos_only || is_logo(i))
+                .take(columns)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut height = 240.0;
+        if !suggested.is_empty() {
+            ui.label(RichText::new("Suggested").small().color(TEXT_DIM));
+            ui.horizontal(|ui| {
+                for &index in &suggested {
+                    self.icon_tile(ui, index, side);
+                }
+            });
+            height -= side + 2.0 * spacing.y + ui.text_style_height(&egui::TextStyle::Small);
+        }
         ui.label(
             RichText::new(format!(
                 "{} icons · Phosphor · available offline",
@@ -562,13 +597,10 @@ impl Editor {
             .small()
             .color(TEXT_DIM),
         );
-        let columns = 8;
-        let side = 76.0;
-        let spacing = ui.spacing().item_spacing;
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("key-icon-library")
-            .min_scrolled_height(240.0)
-            .max_height(240.0)
+            .min_scrolled_height(height)
+            .max_height(height)
             .auto_shrink([false, false]);
         if reset_scroll {
             scroll = scroll.vertical_scroll_offset(0.0);
@@ -580,41 +612,7 @@ impl Editor {
                         let Some(&index) = matches.get(row * columns + column) else {
                             break;
                         };
-                        let Some(&(name, glyph)) = icon::ICONS.get(index) else {
-                            continue;
-                        };
-                        let (rect, response) =
-                            ui.allocate_exact_size(vec2(side, side), Sense::click());
-                        let selected = self.selected_icon == Some(index);
-                        ui.painter().rect_filled(
-                            rect.shrink(1.0),
-                            5.0,
-                            if selected {
-                                ACCENT
-                            } else if response.hovered() {
-                                LIST_HOVER
-                            } else {
-                                LIST
-                            },
-                        );
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            glyph,
-                            font(36.0),
-                            TEXT,
-                        );
-                        if response.clicked() {
-                            self.selected_icon = Some(index);
-                            if self.adding_icon {
-                                self.add(Layer::new(Content::Icon(name, glyph)));
-                                self.adding_icon = false;
-                            } else {
-                                self.draft.layers.clear();
-                                self.add(Layer::new(Content::Icon(name, glyph)));
-                            }
-                        }
-                        response.on_hover_text(display_name(name));
+                        self.icon_tile(ui, index, side);
                     }
                 });
             }
@@ -648,6 +646,44 @@ impl Editor {
                 }
             });
         });
+    }
+
+    /// One clickable icon of the library; a click picks it.
+    fn icon_tile(&mut self, ui: &mut Ui, index: usize, side: f32) {
+        let Some(&(name, glyph)) = icon::ICONS.get(index) else {
+            return;
+        };
+        let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
+        let selected = self.selected_icon == Some(index);
+        ui.painter().rect_filled(
+            rect.shrink(1.0),
+            5.0,
+            if selected {
+                ACCENT
+            } else if response.hovered() {
+                LIST_HOVER
+            } else {
+                LIST
+            },
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            font(36.0),
+            TEXT,
+        );
+        if response.clicked() {
+            self.selected_icon = Some(index);
+            if self.adding_icon {
+                self.add(Layer::new(Content::Icon(name, glyph)));
+                self.adding_icon = false;
+            } else {
+                self.draft.layers.clear();
+                self.add(Layer::new(Content::Icon(name, glyph)));
+            }
+        }
+        response.on_hover_text(display_name(name));
     }
 
     fn preview(&mut self, ui: &mut Ui, side: f32, draggable: bool) {
@@ -931,18 +967,43 @@ impl Editor {
     }
 }
 
+/// Icons whose name holds every word of `query`, the exact name first, then
+/// the icons the meaning table gives for it ("shut down" finds the power icon).
 fn search_icons(query: &str, logos_only: bool) -> Vec<usize> {
-    let query = query.to_ascii_uppercase().replace(['-', '_'], " ");
-    icon::ICONS
+    let upper = query.to_ascii_uppercase().replace(['-', '_'], " ");
+    let exact = upper.split_whitespace().collect::<Vec<_>>().join("_");
+    let mut found: Vec<usize> = icon::ICONS
         .iter()
         .enumerate()
         .filter_map(|(index, (name, _))| {
             let name = name.replace('_', " ");
             ((!logos_only || name.contains("LOGO"))
-                && query.split_whitespace().all(|word| name.contains(word)))
+                && upper.split_whitespace().all(|word| name.contains(word)))
             .then_some(index)
         })
-        .collect()
+        .collect();
+    if let Some(at) = found
+        .iter()
+        .position(|&i| icon::ICONS.get(i).is_some_and(|(n, _)| *n == exact))
+    {
+        let index = found.remove(at);
+        found.insert(0, index);
+    }
+    for index in suggest::by_meaning(query)
+        .into_iter()
+        .filter_map(suggest::index_of)
+    {
+        if (!logos_only || is_logo(index)) && !found.contains(&index) {
+            found.push(index);
+        }
+    }
+    found
+}
+
+fn is_logo(index: usize) -> bool {
+    icon::ICONS
+        .get(index)
+        .is_some_and(|(name, _)| name.contains("LOGO"))
 }
 
 fn display_name(name: &str) -> String {
@@ -1308,6 +1369,111 @@ mod tests {
                 .all(|&i| icon::ICONS[i].0.contains("LOGO"))
         );
         assert!(search_icons("no-such-deckly-icon", false).is_empty());
+    }
+
+    #[test]
+    fn new_key_pictures_start_transparent_and_keep_the_users_choice() {
+        let key = KeyConfig::new(crate::actions::OPEN, serde_json::json!({ "path": "" }));
+        for mode in [Mode::Library, Mode::Create] {
+            assert!(Editor::new("page.0".into(), &key, mode).draft.transparent);
+        }
+        let mut page = Page::new();
+        page.icon = Some("existing.svg".into());
+        assert!(
+            Editor::new_page("profile", &page, Mode::Library)
+                .draft
+                .transparent
+        );
+
+        // Unticked once, a picked icon keeps the solid background.
+        let mut editor = Editor::new("page.0".into(), &key, Mode::Library);
+        editor.draft.transparent = false;
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        pass(&mut editor, &ctx, Vec::new());
+        let shapes = pass(&mut editor, &ctx, vec![egui::Event::Text("power".into())]);
+        click(&mut editor, &ctx, text_position(&shapes, icon::POWER));
+        assert_eq!(editor.draft.layers.len(), 1);
+        assert!(!editor.draft.transparent);
+        assert!(editor.render().unwrap().pixels().all(|p| p.0[3] == 255));
+
+        // A key that already has a picture opens on a new draft too; the
+        // saved picture, added back as a layer, keeps its own opaque pixels.
+        let mut saved = key.clone();
+        saved.image = Some("saved.png".into());
+        let mut editor = Editor::new("page.0".into(), &saved, Mode::Create);
+        assert!(editor.draft.transparent);
+        let mut layer = Layer::new(Content::Picture(
+            "saved.png".into(),
+            Arc::new(RgbaImage::from_pixel(64, 64, image::Rgba([0, 0, 0, 255]))),
+        ));
+        layer.size = 1.0;
+        editor.add(layer);
+        assert!(editor.render().unwrap().pixels().all(|p| p.0[3] == 255));
+    }
+
+    #[test]
+    fn search_finds_icons_by_meaning_after_name_matches() {
+        let power = suggest::index_of("POWER").unwrap();
+        for query in [
+            "shut down",
+            "shutdown",
+            "Shut-Down",
+            "power off",
+            "turn off",
+        ] {
+            assert!(search_icons(query, false).contains(&power), "{query}");
+        }
+        assert_eq!(search_icons("power", false).first(), Some(&power));
+        let lock = suggest::index_of("LOCK").unwrap();
+        let found = search_icons("lock", false);
+        assert_eq!(found.first(), Some(&lock));
+        assert!(search_icons("shut down", true).is_empty());
+    }
+
+    #[test]
+    fn the_library_suggests_icons_for_the_key_while_the_search_is_empty() {
+        let key = KeyConfig::new(
+            crate::actions::OPEN,
+            serde_json::json!({ "path": "systemctl poweroff" }),
+        );
+        let mut editor = Editor::new("page.0".into(), &key, Mode::Library);
+        let power = suggest::index_of("POWER").unwrap();
+        assert_eq!(editor.suggested.first(), Some(&power));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        pass(&mut editor, &ctx, Vec::new());
+        let shapes = pass(&mut editor, &ctx, Vec::new());
+        text_position(&shapes, "Suggested");
+        for label in ["Set image", "Cancel", "Customize in creator"] {
+            let pos = text_position(&shapes, label);
+            assert!(
+                (0.0..852.0).contains(&pos.x) && (0.0..742.0).contains(&pos.y),
+                "{label}: {pos:?}"
+            );
+        }
+        // Suggestions are only offered: nothing is applied until a click.
+        assert!(editor.draft.layers.is_empty());
+        click(&mut editor, &ctx, text_position(&shapes, icon::POWER));
+        assert_eq!(editor.selected_icon, Some(power));
+        editor.query = "x".into();
+        let shapes = pass(&mut editor, &ctx, Vec::new());
+        assert!(shapes.iter().all(|s| !matches!(&s.shape,
+            egui::Shape::Text(t) if t.galley.job.text == "Suggested")));
+
+        let plain = KeyConfig::new(crate::actions::OPEN, serde_json::json!({ "path": "" }));
+        assert!(
+            Editor::new("page.0".into(), &plain, Mode::Library)
+                .suggested
+                .is_empty()
+        );
+        let mut page = Page::new();
+        page.name = "Shut down".into();
+        assert!(
+            Editor::new_page("p", &page, Mode::Library)
+                .suggested
+                .is_empty()
+        );
     }
 
     #[test]
