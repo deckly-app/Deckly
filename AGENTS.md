@@ -36,11 +36,17 @@ Crates form layers. A crate may depend only on crates in lower layers.
 | --- | --- | --- |
 | L0 | `deckly-core` | Device model table, profile/page/key/action data model, serialization, validation. No I/O except profile load/save. |
 | L1 | `deckly-device` | Stream Deck HID protocol: report encoding/decoding (pure, unit-tested) and the transport that talks to real devices. |
-| L2 | `deckly-plugin-host` | Host side of the SDK plugin protocol: manifests, plugin installs, the local WebSocket server, plugin processes and their restarts. |
+| L1 | `deckly-plugin-protocol` | Deckly plugin protocol: message types, framing, settings form descriptions and limits shared by the host and the SDK. Pure, no I/O. Depends only on `serde` and `serde_json`. Own version (`0.0.x`), not the workspace's. |
+| L2 | `deckly-plugin-host` | Runs plugins: manifests, plugin installs, plugin processes and their restarts; Stream Deck SDK plugins over the local WebSocket server, Deckly plugins over pipes. May use `deckly-plugin-protocol`, and re-exports it (`proto`) for the app's settings forms. |
+| L2 | `deckly-sdk` | What a Deckly plugin author uses: actions, settings, settings forms, global settings, keys, faces, the run loop, a test harness. Depends only on `deckly-plugin-protocol`, `serde` and `serde_json`: never on `deckly-core`, `deckly-device`, the host or the app. Own version (`0.0.x`). |
 | L3 | `deckly` | The desktop app: egui UI, key image rendering, built-in action execution, runtime wiring. |
 | helper | `deckly-web` | Separate process with the system web view for HTML plugins and Property Inspectors. Never linked into the app. |
+| tool | `deckly-cli` | The plugin tool for plugin authors: `create` (a new project from templates), `build`, `link`/`unlink`/`list`, `dev`, `validate`, `pack`, `log`. Also installed as `cargo-deckly`. Depends only on `deckly-plugin-protocol` (L1), never on the app, the host or the SDK; runs `cargo` and `git` as commands. Own version (`0.0.x`). |
+| example | `examples/hello-deckly`, `examples/counter-plugin`, `examples/transport-bench` | The plugin from the SDK book's Getting started page, a fuller example Deckly plugin with its tests, and the transport measurements. Not shipped in releases. |
 
-Planned, add when the work starts (not before): `deckly-cli` (headless control and inspection).
+Planned, add when the work starts (not before): headless control and inspection of Deckly, as more subcommands of `deckly-cli`.
+
+The plugin SDK docs for plugin authors are the mdBook in `docs/sdk`, published on GitHub Pages; `cargo dev book` builds them. A change to the SDK's API updates those pages in the same branch. `docs/plugin-sdk.md` is the design record for Deckly contributors, not user docs.
 
 ## 4. Golden rules
 
@@ -89,7 +95,37 @@ Deckly is a clean-room reimplementation: study features and behavior, document f
 - Without explicit human approval for the specific operation and target, agents must not change either local or remote `dev` or `main`: no direct commits, merges, cherry-picks, rebases, resets, pushes, force-pushes, deletions, or other branch updates. Fetching and reading these branches, creating a task branch from `origin/dev`, and incorporating `origin/dev` into a task branch are allowed because they do not update the protected branches.
 - Promote `dev` into `main` only when the owner explicitly requests that promotion. Do not start this promotion on an agent's own initiative or infer permission to update `main` from approval to merge into `dev`.
 - Permission to work on or push a task branch does not authorize changes to `dev` or `main`. Approval applies only to the stated operation, target, and agreed changes; it is not blanket approval for later tasks or promotions. An explicit approval already given in the conversation remains valid within that scope; do not ask for it again.
-- Pull requests may be prepared for review, but do not enable auto-merge or otherwise bypass these approval requirements.
+- Task branches go into `dev` by a merge, after the owner approves it; do not open pull requests for them.
+- The one pull request is from `dev` into `main`, opened when the owner asks to promote `dev`. Its description is the changelog of the release: what changed for users, grouped by feature and fix, in plain words. Do not enable auto-merge or otherwise bypass these approval requirements.
+
+### Pushing with a token for this repository (optional)
+
+A convenience, not a requirement. If your own `git` and `gh` login can push to `deckly-app/Deckly`, skip this. Otherwise, to let an agent push and open pull requests without your whole GitHub login, the token can live in a `.env` file in the clone:
+
+1. Create a fine-grained token: resource owner `deckly-app`; the `Deckly` repository, or all of the organization's repositories so plugin repositories work too; Contents, Pull requests and Workflows read and write (Workflows is needed to push changes under `.github/workflows`). The organization may have to approve it.
+2. Put it in `.env` at the repository root as one line: `GH_TOKEN=github_pat_...`. `.env` must stay listed in `.gitignore`; check `git check-ignore .env` before you create it. Another repository of the organization gets its own `.env` (and its own `.gitignore` entry) the same way; one token for all of `deckly-app` can go into each.
+3. Once per clone, make `git` read it for GitHub. This applies to this clone and its worktrees only; other repositories keep your usual login:
+
+   ```sh
+   git config --local credential.https://github.com.helper ''
+   git config --local --add credential.https://github.com.helper '!f() { test "$1" = get || exit 0; t=$(sed -n "s/^GH_TOKEN=//p" "$(git rev-parse --path-format=absolute --git-common-dir)/../.env" 2>/dev/null); test -n "$t" && printf "username=x-access-token\npassword=%s\n" "$t"; }; f'
+   ```
+
+4. Agents run `gh` with the same token: `GH_TOKEN=$(sed -n 's/^GH_TOKEN=//p' .env) gh pr create ...`.
+
+Never commit `.env`, and never print the token in chat, logs, commit messages, or pull requests. To stop using it, delete `.env` and run `git config --local --unset-all credential.https://github.com.helper`.
+
+### Versions and publishing
+
+- Everything Deckly ships stays below 0.1.0 until the owner declares it
+  finished: the app (`0.0.x`), and the plugin crates (`deckly-sdk`,
+  `deckly-plugin-protocol`, the planned `deckly-cli`) each from `0.0.1` on.
+  A release raises the patch number (`0.0.1`, `0.0.2`, ...). Only the owner
+  decides when something becomes `0.1.0`; never propose or set it on your own.
+- Publishing to crates.io cannot be undone (a version can only be yanked).
+  Publish only after the work is complete and checked locally, and only with
+  the owner's explicit approval for that version. Run
+  `cargo publish --dry-run` first.
 
 ### Implementation and validation
 

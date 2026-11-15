@@ -44,14 +44,14 @@ new model.
 ## Install
 
 Ready-made builds are on the
-[releases page](https://github.com/auuruum/Deckly/releases). The commands
+[releases page](https://github.com/deckly-app/Deckly/releases). The commands
 below download the latest one, check its checksum and install it for your
 user. Close the official Stream Deck app first.
 
 Linux (x86_64) and macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/auuruum/Deckly/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/deckly-app/Deckly/main/install.sh | sh
 ```
 
 On Linux this installs to `~/.local`, adds Deckly to the app menu and, with
@@ -60,18 +60,21 @@ Plugins with web pages also need WebKitGTK 4.1. On macOS it puts
 `Deckly.app` in `~/Applications`. To remove Deckly (your profiles stay):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/auuruum/Deckly/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/deckly-app/Deckly/main/install.sh | sh -s -- --uninstall
 ```
 
-Windows (PowerShell):
+Windows: download
+[**deckly-setup-windows-x64.exe**](https://github.com/deckly-app/Deckly/releases/latest/download/deckly-setup-windows-x64.exe)
+and run it. Or, from PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/auuruum/Deckly/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/deckly-app/Deckly/main/install.ps1 | iex
 ```
 
-This installs to `%LOCALAPPDATA%\Programs\Deckly` with a Start menu entry,
-without administrator rights. The builds are not code-signed, so Windows
-SmartScreen and macOS Gatekeeper may warn before the first start.
+Both install to `%LOCALAPPDATA%\Programs\Deckly` with a Start menu entry,
+without administrator rights; remove Deckly in Settings > Apps. The builds
+are not code-signed, so Windows SmartScreen ("More info" > "Run anyway") and
+macOS Gatekeeper may warn before the first start.
 
 Deckly asks GitHub once a day whether a new version is out (Preferences >
 General, next to the version; it can be turned off there). A new version is
@@ -82,7 +85,7 @@ Homebrew, winget) say which command updates them instead.
 Homebrew (macOS):
 
 ```sh
-brew install auuruum/tap/deckly
+brew install deckly-app/tap/deckly
 ```
 
 Arch Linux: the `deckly-bin` AUR package is coming; until then use the
@@ -326,7 +329,7 @@ outside the editor, its old history is discarded instead of overwriting it.
 ## Plugins
 
 Deckly runs plugins written for the Stream Deck SDK unchanged, each as its
-own process. Install one from the Plugins tab ("Install…" for a
+own process. Install one from the Plugins tab ("Add File…" for a
 `.streamDeckPlugin` file or a `.zip` download that holds one or a
 `<plugin id>.sdPlugin` folder, "Add Folder…" for a `.sdPlugin` folder or
 a folder holding one) or drop the file or folder on the window. Plugin actions then appear in the
@@ -371,6 +374,10 @@ Plugins live in Deckly's config folder under `plugins`, their logs under
 `logs/plugins`. For plugin authors, `DECKLY_PLUGIN_DEBUG=1` writes every
 message to and from a plugin into its log, shows HTML plugin pages, and
 enables the web view's developer tools.
+
+To write a plugin of your own in Rust, see the
+[Deckly Plugin SDK docs](https://deckly-app.github.io/Deckly/)
+(sources in [`docs/sdk`](docs/sdk/README.md)).
 
 ## Standby screen
 

@@ -1,0 +1,42 @@
+[package]
+name = "deckly-cli"
+description = "Create, build, run and package Deckly plugins"
+# Versioned on its own, with the plugin crates.
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage = "https://deckly-app.github.io/Deckly/"
+keywords = ["deckly", "stream-deck", "plugin", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+default-run = "deckly-cli"
+
+[[bin]]
+name = "deckly-cli"
+path = "src/main.rs"
+
+# The same program as a Cargo subcommand: `cargo deckly create`.
+[[bin]]
+name = "cargo-deckly"
+path = "src/bin/cargo-deckly.rs"
+
+[dependencies]
+deckly-plugin-protocol.workspace = true
+serde_json.workspace = true
+# Arguments: seven commands do not need a bigger parser.
+lexopt = "0.3.2"
+# The wizard's prompts are drawn by this crate's own small layer (src/prompt.rs)
+# on crossterm, which is already in the tree through the app's dependencies:
+# raw mode, key events and cursor moves on Linux, macOS and Windows.
+crossterm = "0.29.0"
+# Columns of text, so wide characters and the cursor line up.
+unicode-width = "0.2.2"
+# Rebuilds on save in `dev`: inotify, FSEvents and ReadDirectoryChangesW.
+notify = "8.2.0"
+# `.decklyPlugin` files are zip archives; already in the tree through the
+# plugin host.
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[lints]
+workspace = true

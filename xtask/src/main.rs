@@ -4,9 +4,15 @@
 //! - `cargo dev dist`: build the release archive for one target.
 //! - `cargo dev release-files`: write the Homebrew formula and AUR package
 //!   for a release from its checksums.
+//! - `cargo dev book`: build the plugin SDK docs site into `target/book`.
+//! - `cargo dev sdk`: check the plugin crates and examples.
+//! - `cargo dev install-cli`: check them, then install this checkout's
+//!   plugin tool.
 
+mod book;
 mod dist;
 mod licenses;
+mod plugin_tools;
 mod release_files;
 
 use std::ffi::OsString;
@@ -18,6 +24,9 @@ fn main() -> ExitCode {
     let result = match args.peek().and_then(|a| a.to_str()) {
         Some("dist") => dist::run(args.skip(1)).map(|()| true),
         Some("release-files") => release_files::run(args.skip(1)).map(|()| true),
+        Some("book") => book::run(args.skip(1)).map(|()| true),
+        Some("sdk") => plugin_tools::check(args.skip(1)),
+        Some("install-cli") => plugin_tools::install(args.skip(1)),
         _ => run(args),
     };
     match result {
@@ -68,7 +77,16 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {
              Builds the release archive for one target (default: this computer).\n\
              \n\
              cargo dev release-files --tag <vX.Y.Z> --checksums <SHA256SUMS> [--out <dir>]\n\
-             Writes the Homebrew formula and the AUR package for a release."
+             Writes the Homebrew formula and the AUR package for a release.\n\
+             \n\
+             cargo dev book\n\
+             Builds the plugin SDK docs (book, API reference, llms.txt) into target/book.\n\
+             \n\
+             cargo dev sdk [--fix]\n\
+             Checks the plugin crates and examples: format, clippy, tests.\n\
+             \n\
+             cargo dev install-cli [--no-check] [--debug]\n\
+             Checks them, then installs deckly-cli and cargo-deckly from this checkout."
         );
         return Ok(true);
     }

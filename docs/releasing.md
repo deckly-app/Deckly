@@ -13,7 +13,7 @@ release; a person checks the draft and publishes it.
 | `deckly-setup-windows-x64.exe` | Inno Setup installer (per user, no admin); used by `install.ps1` and the updater |
 | `deckly-aarch64-apple-darwin.tar.gz`, `deckly-x86_64-apple-darwin.tar.gz` | `Deckly.app` (ad-hoc signed) |
 | `SHA256SUMS` | Checksums of the archives, read by the install scripts |
-| `deckly.rb` | Homebrew formula for the `auuruum/homebrew-tap` repository |
+| `deckly.rb` | Homebrew formula for the `deckly-app/homebrew-tap` repository |
 | `aur-deckly-bin.tar.gz` | `PKGBUILD`, `.SRCINFO` and install file for the `deckly-bin` AUR package |
 
 Every archive also carries `LICENSE`, `README.md` and
@@ -63,7 +63,8 @@ DECKLY_ARCHIVE=dist/deckly-x86_64-unknown-linux-gnu.tar.gz DECKLY_PREFIX=/tmp/de
    release, which skips pre-releases. Running copies offer the update within
    a day.
 6. Homebrew: copy the `deckly.rb` asset to `Formula/deckly.rb` in
-   `auuruum/homebrew-tap`, commit and push.
+   `deckly-app/homebrew-tap`, commit and push. Skipping this leaves
+   `brew upgrade` on the old version.
 7. AUR: unpack `aur-deckly-bin.tar.gz` into a clone of
    `ssh://aur@aur.archlinux.org/deckly-bin.git`, commit and push.
 

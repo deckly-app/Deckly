@@ -1,0 +1,26 @@
+# The Deckly plugin SDK book. Build the whole site (book, API reference and
+# the files for AI agents) with `cargo dev book`; read the book alone with
+# `mdbook serve docs/sdk --open`.
+
+[book]
+title = "Deckly Plugin SDK"
+description = "Write plugins for Deckly in Rust: getting started, guides and reference."
+language = "en"
+# The pages sit next to this file, so they read well on GitHub too.
+src = "."
+
+[build]
+build-dir = "../../target/book"
+create-missing = false
+
+[rust]
+edition = "2024"
+
+[output.html]
+git-repository-url = "https://github.com/deckly-app/Deckly/tree/dev/docs/sdk"
+edit-url-template = "https://github.com/deckly-app/Deckly/edit/dev/docs/sdk/{path}"
+site-url = "/Deckly/"
+no-section-label = true
+
+[output.html.playground]
+runnable = false

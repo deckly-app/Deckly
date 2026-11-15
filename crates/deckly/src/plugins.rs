@@ -11,11 +11,13 @@ use crate::actions;
 use crate::os;
 use crate::render;
 use crate::runtime::{self, Msg, Repaint, Shared, State};
+use crate::secrets;
 use crate::store;
 use deckly_core::{DeviceKind, FeedbackMarks, KeyConfig, MarkStyle, Page};
 use deckly_device::ConnectedDevice;
 use deckly_plugin_host::manifest::{image_file, safe_join};
-use deckly_plugin_host::{Command, Host, HostEvent, Instance, Status, protocol};
+use deckly_plugin_host::proto::Form;
+use deckly_plugin_host::{Command, Face, Host, HostEvent, ImageFormat, Instance, Status, protocol};
 use image::RgbaImage;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -73,6 +75,21 @@ pub struct Overlay {
     pub mark: Option<Mark>,
     /// The page a Go to Page key leads to.
     pub page: Option<PageTile>,
+    /// What a Deckly plugin asked to draw on the key.
+    pub face: Option<Arc<ShownFace>>,
+}
+
+/// A face a Deckly plugin shows, with its icon decoded.
+pub struct ShownFace {
+    pub face: Face,
+    pub icon: Option<Image>,
+}
+
+impl Hash for ShownFace {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.face.hash(h);
+        self.icon.as_ref().map(|i| i.id).hash(h);
+    }
 }
 
 /// What a Go to Page key's picture shows of its page.
@@ -90,6 +107,7 @@ impl Hash for Overlay {
         self.image.as_ref().map(|i| i.id).hash(h);
         self.title.hash(h);
         self.page.hash(h);
+        self.face.hash(h);
     }
 }
 
@@ -111,6 +129,8 @@ pub struct CatalogAction {
     pub visible: bool,
     pub in_multi_actions: bool,
     pub in_key_logic: bool,
+    /// The settings form of a Deckly plugin action, drawn by Deckly.
+    pub form: Option<Arc<Form>>,
 }
 
 #[derive(Clone)]
@@ -127,6 +147,10 @@ pub struct CatalogPlugin {
     pub dir: PathBuf,
     /// The plugin refuses to work outside the official app.
     pub official_only: bool,
+    /// A Deckly plugin's form for its global settings.
+    pub form: Option<Arc<Form>>,
+    /// A development plugin's linked folder (the plugin tool's build).
+    pub dev_source: Option<PathBuf>,
     /// Identifies the manifest the images were decoded from.
     source: usize,
 }
@@ -152,6 +176,7 @@ pub struct PluginKey {
     pub titles: Vec<Option<String>>,
     pub images: Vec<Option<Image>>,
     pub mark: Option<(Mark, Instant)>,
+    pub face: Option<Arc<ShownFace>>,
 }
 
 /// The id a plugin knows a placed key by.
@@ -240,10 +265,13 @@ impl State {
             .map_or(0, |l| l.state)
             .min(action.states.len().saturating_sub(1));
         let def = action.states.get(state);
+        let face = live.and_then(|l| l.face.clone());
+        // A face replaces the manifest's pictures; an image the plugin
+        // sent still shows under it.
         let image = live
             .and_then(|l| l.images.get(state).cloned().flatten())
-            .or_else(|| def.and_then(|d| d.image.clone()))
-            .or_else(|| action.icon.clone());
+            .or_else(|| face.is_none().then(|| def.and_then(|d| d.image.clone()))?)
+            .or_else(|| face.is_none().then(|| action.icon.clone())?);
         let title = live
             .and_then(|l| l.titles.get(state).cloned().flatten())
             .or_else(|| def.map(|d| d.title.clone()).filter(|t| !t.is_empty()));
@@ -251,6 +279,7 @@ impl State {
             image,
             title,
             mark,
+            face,
             ..Overlay::default()
         })
     }
@@ -437,6 +466,7 @@ pub fn start(
             runtime,
             host,
             repaint,
+            face_icons: HashMap::new(),
         };
         worker.rebuild_catalog();
         while let Ok(event) = events.recv() {
@@ -456,7 +486,12 @@ struct Worker {
     runtime: Sender<Msg>,
     host: Host,
     repaint: Repaint,
+    /// Face icons by plugin and path, decoded once.
+    face_icons: HashMap<(String, String), Option<Image>>,
 }
+
+/// Face icons kept decoded; more start the cache over.
+const MAX_FACE_ICONS: usize = 256;
 
 impl Worker {
     fn redraw(&self) {
@@ -502,7 +537,9 @@ impl Worker {
                     actions: Vec::new(),
                     status: p.status.clone(),
                     dir: p.dir.clone(),
+                    dev_source: p.source.clone(),
                     official_only: false,
+                    form: None,
                     source: 0,
                 }));
                 continue;
@@ -514,10 +551,18 @@ impl Worker {
             if let Some(prev) = old.get(&p.id).filter(|o| o.source == source) {
                 let mut next = (**prev).clone();
                 next.status = p.status.clone();
+                next.dev_source.clone_from(&p.source);
                 plugins.push(Arc::new(next));
                 continue;
             }
             let image = |rel: &str| load_file_image(&p.dir, rel).map(key_image);
+            let form_of = |uuid: &str| {
+                m.deckly
+                    .as_ref()
+                    .and_then(|d| d.action(uuid)?.form.clone())
+                    .filter(|f| !f.is_empty())
+                    .map(Arc::new)
+            };
             let actions = m
                 .actions
                 .iter()
@@ -545,6 +590,7 @@ impl Worker {
                     visible: a.visible,
                     in_multi_actions: a.in_multi_actions,
                     in_key_logic: a.in_key_logic,
+                    form: form_of(&a.uuid),
                 })
                 .collect();
             plugins.push(Arc::new(CatalogPlugin {
@@ -558,7 +604,14 @@ impl Worker {
                 actions,
                 status: p.status.clone(),
                 dir: p.dir.clone(),
+                dev_source: p.source.clone(),
                 official_only: deckly_plugin_host::manifest::needs_official_app(&p.dir),
+                form: m
+                    .deckly
+                    .as_ref()
+                    .and_then(|d| d.form.clone())
+                    .filter(|f| !f.is_empty())
+                    .map(Arc::new),
                 source,
             }));
         }
@@ -619,6 +672,55 @@ impl Worker {
                 drop(s);
                 self.redraw();
             }
+            Command::SetImageData {
+                context,
+                format,
+                data,
+                state,
+            } => {
+                if runtime::lock(&self.state)
+                    .own_key(plugin, &context)
+                    .is_none()
+                {
+                    return;
+                }
+                let image = match decode_image_data(format, data) {
+                    Ok(img) => key_image(img),
+                    Err(e) => {
+                        self.log(plugin, &format!("set_image: {e}"));
+                        return;
+                    }
+                };
+                let mut s = runtime::lock(&self.state);
+                let Some(key) = s.own_key(plugin, &context) else {
+                    return;
+                };
+                let n = s.states_of(&key);
+                let k = s.plugin_key(&context, n);
+                set_for_states(&mut k.images, state, Some(image));
+                drop(s);
+                self.redraw();
+            }
+            Command::SetFace { context, face } => {
+                if runtime::lock(&self.state)
+                    .own_key(plugin, &context)
+                    .is_none()
+                {
+                    return;
+                }
+                let shown = face.map(|face| {
+                    let icon = face.icon.as_deref().and_then(|p| self.face_icon(plugin, p));
+                    Arc::new(ShownFace { face, icon })
+                });
+                let mut s = runtime::lock(&self.state);
+                let Some(key) = s.own_key(plugin, &context) else {
+                    return;
+                };
+                let n = s.states_of(&key);
+                s.plugin_key(&context, n).face = shown;
+                drop(s);
+                self.redraw();
+            }
             Command::SetState { context, state } => {
                 let mut s = runtime::lock(&self.state);
                 let Some(key) = s.own_key(plugin, &context) else {
@@ -645,8 +747,13 @@ impl Worker {
                     self.host.send(plugin, msg);
                 }
             }
-            Command::SetGlobalSettings { settings } => {
+            Command::SetGlobalSettings { mut settings } => {
+                if let Err(e) = keep_global_secrets(&self.state, plugin, &mut settings) {
+                    self.log(plugin, &format!("a secret was not stored: {e}"));
+                }
                 self.save_global(plugin, &settings);
+                runtime::lock(&self.state).globals_version += 1;
+                (self.repaint)();
                 if self
                     .host
                     .inspector()
@@ -675,6 +782,20 @@ impl Worker {
             Command::LogMessage { .. }
             | Command::SendToPropertyInspector { .. }
             | Command::SendToPlugin { .. } => {}
+            Command::Choices {
+                request,
+                options,
+                error,
+            } => {
+                let answer = match error {
+                    Some(e) => Err(e),
+                    None => Ok(options),
+                };
+                runtime::lock(&self.state)
+                    .choices
+                    .answer(plugin, request, answer);
+                (self.repaint)();
+            }
             Command::Other(event) => self.log(plugin, &format!("{event} is not supported yet")),
         }
     }
@@ -774,6 +895,26 @@ impl Worker {
             .is_some_and(|(p, _)| p.id == plugin)
     }
 
+    /// A face icon from the plugin's folder, decoded once.
+    fn face_icon(&mut self, plugin: &str, path: &str) -> Option<Image> {
+        let id = (plugin.to_owned(), path.to_owned());
+        if let Some(icon) = self.face_icons.get(&id) {
+            return icon.clone();
+        }
+        let icon = self
+            .plugin_dir(plugin)
+            .and_then(|dir| load_file_image(&dir, path))
+            .map(key_image);
+        if icon.is_none() {
+            self.log(plugin, &format!("face icon {path} cannot be read"));
+        }
+        if self.face_icons.len() >= MAX_FACE_ICONS {
+            self.face_icons.clear();
+        }
+        self.face_icons.insert(id, icon.clone());
+        icon
+    }
+
     fn plugin_dir(&self, plugin: &str) -> Option<PathBuf> {
         runtime::lock(&self.state)
             .catalog
@@ -797,9 +938,35 @@ impl Worker {
 
     /// Saves new settings into the key's profile; returns the updated key
     /// as its plugin sees it.
-    fn store_settings(&self, plugin: &str, context: &str, settings: Value) -> Option<Instance> {
+    fn store_settings(&self, plugin: &str, context: &str, mut settings: Value) -> Option<Instance> {
+        let s = runtime::lock(&self.state);
+        let own = s.own_key(plugin, context)?;
+        let form = s
+            .catalog
+            .action(&own.action)
+            .and_then(|(_, a)| a.form.clone());
+        // The store may take seconds to answer; the editor and the device
+        // must not wait for it behind the state lock.
+        drop(s);
+        // A Deckly plugin's secrets go to the secret store, not the profile.
+        if let Some(form) = form.filter(|f| f.secrets().next().is_some())
+            && let Err(e) = secrets::keep(
+                secrets::vault(),
+                plugin,
+                &form,
+                &own.settings,
+                &mut settings,
+                &|_| secrets::new_id(),
+            )
+        {
+            self.log(plugin, &format!("a secret was not stored: {e}"));
+        }
         let mut s = runtime::lock(&self.state);
-        s.own_key(plugin, context)?;
+        // The key changed while the lock was free (the user edited or
+        // removed it): the plugin's settings were for the old one.
+        if s.own_key(plugin, context).as_ref() != Some(&own) {
+            return None;
+        }
         let (page_id, index, member) = parse_context(context)?;
         let (profile_id, page) = s.page_mut(page_id)?;
         let key = page.keys.get_mut(&index)?;
@@ -816,19 +983,11 @@ impl Worker {
     }
 
     fn save_global(&self, plugin: &str, settings: &Value) {
-        let Some(path) = global_settings_file(plugin) else {
-            return;
-        };
-        let text = settings.to_string();
-        if text.len() > MAX_GLOBAL_SETTINGS_BYTES {
-            self.log(plugin, "global settings are too large; not saved");
+        // Not a valid plugin id: nowhere to keep them.
+        if global_settings_file(plugin).is_none() {
             return;
         }
-        let result = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| std::fs::write(&path, text));
-        if let Err(e) = result {
+        if let Err(e) = store_global(plugin, settings) {
             self.log(plugin, &format!("cannot save global settings: {e}"));
         }
     }
@@ -858,6 +1017,54 @@ impl Worker {
     }
 }
 
+/// Keys of `after` whose action or settings differ from `before`'s, by
+/// context, folder keys and Multi Action members included.
+fn changed_keys(
+    before: &deckly_core::Profile,
+    after: &deckly_core::Profile,
+) -> Vec<(String, KeyConfig)> {
+    fn keys(profile: &deckly_core::Profile) -> HashMap<String, &KeyConfig> {
+        let mut out = HashMap::new();
+        for page in profile.pages.iter().chain(&profile.folders) {
+            for (&index, key) in &page.keys {
+                out.insert(context(&page.id, index), key);
+                for (list, members) in key.groups.iter().enumerate() {
+                    for (member, key) in members.iter().enumerate() {
+                        out.insert(member_context(&page.id, index, list, member), key);
+                    }
+                }
+            }
+        }
+        out
+    }
+    let old = keys(before);
+    keys(after)
+        .into_iter()
+        .filter(|(context, key)| {
+            old.get(context)
+                .is_none_or(|was| was.action != key.action || was.settings != key.settings)
+        })
+        .map(|(context, key)| (context, key.clone()))
+        .collect()
+}
+
+/// What plugins must hear after undo or redo replaced `before` with
+/// `after`: each of their keys whose settings came back, by plugin. Built
+/// under the state lock; sent after it.
+pub fn restored_settings(
+    state: &State,
+    before: &deckly_core::Profile,
+    after: &deckly_core::Profile,
+) -> Vec<(String, Instance)> {
+    changed_keys(before, after)
+        .into_iter()
+        .filter_map(|(context, key)| {
+            let (plugin, _) = state.catalog.action(&key.action)?;
+            Some((plugin.id.clone(), state.instance(&context, &key)))
+        })
+        .collect()
+}
+
 /// Sets one state's value, or every state's when no state is given.
 fn set_for_states<T: Clone>(slots: &mut [Option<T>], state: Option<usize>, value: Option<T>) {
     match state {
@@ -870,13 +1077,48 @@ fn set_for_states<T: Clone>(slots: &mut [Option<T>], state: Option<usize>, value
     }
 }
 
+/// Takes the secrets out of global settings a Deckly plugin sent, keeping
+/// references in the file instead.
+fn keep_global_secrets(state: &Shared, plugin: &str, settings: &mut Value) -> Result<(), String> {
+    let form = runtime::lock(state)
+        .catalog
+        .plugins
+        .iter()
+        .find(|p| p.id == plugin)
+        .and_then(|p| p.form.clone());
+    match form.filter(|f| f.secrets().next().is_some()) {
+        Some(form) => secrets::keep(
+            secrets::vault(),
+            plugin,
+            &form,
+            &load_global(plugin),
+            settings,
+            &secrets::global_id,
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Saves a plugin's global settings, as its plugin-wide form edits them.
+pub fn store_global(plugin: &str, settings: &Value) -> Result<(), String> {
+    let path = global_settings_file(plugin).ok_or("no configuration folder")?;
+    let text = settings.to_string();
+    if text.len() > MAX_GLOBAL_SETTINGS_BYTES {
+        return Err("the settings are too large".into());
+    }
+    path.parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, text))
+        .map_err(|e| e.to_string())
+}
+
 fn global_settings_file(plugin: &str) -> Option<PathBuf> {
     deckly_plugin_host::manifest::valid_uuid(plugin)
         .then(|| store::config_dir().map(|d| d.join("plugin-data").join(format!("{plugin}.json"))))
         .flatten()
 }
 
-fn load_global(plugin: &str) -> Value {
+pub fn load_global(plugin: &str) -> Value {
     global_settings_file(plugin)
         .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() <= MAX_GLOBAL_SETTINGS_BYTES as u64))
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -937,6 +1179,33 @@ pub fn decode_plugin_image(data: &str, dir: &Path) -> Result<RgbaImage, String> 
             return Err("image is too large".into());
         }
         Ok(img.into_rgba8())
+    }
+}
+
+/// Decodes image bytes a Deckly plugin sent as a blob.
+fn decode_image_data(format: ImageFormat, data: Vec<u8>) -> Result<RgbaImage, String> {
+    match format {
+        ImageFormat::Svg => render_svg(&data),
+        ImageFormat::Rgba { width, height } => {
+            RgbaImage::from_raw(width, height, data).ok_or_else(|| "wrong raw image size".into())
+        }
+        ImageFormat::Png | ImageFormat::Jpeg => {
+            let kind = if format == ImageFormat::Png {
+                image::ImageFormat::Png
+            } else {
+                image::ImageFormat::Jpeg
+            };
+            let mut reader = image::ImageReader::with_format(std::io::Cursor::new(data), kind);
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(2048);
+            limits.max_image_height = Some(2048);
+            limits.max_alloc = Some(64 * 1024 * 1024);
+            reader.limits(limits);
+            reader
+                .decode()
+                .map(|img| img.into_rgba8())
+                .map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -1029,6 +1298,41 @@ mod tests {
         let page = profile.pages[0].id.clone();
         profile.pages[0].keys.insert(3, key);
         (State::new(vec![profile], Default::default()), page)
+    }
+
+    #[test]
+    fn undo_finds_every_key_whose_settings_came_back() {
+        let mut before = deckly_core::Profile::new("Test", DeviceKind::Mk2);
+        let page = before.pages[0].id.clone();
+        let mut multi = KeyConfig::new(actions::MULTI_ACTION, json!({}));
+        multi.groups[0].push(KeyConfig::new("com.example.a", json!({"n": 1})));
+        before.pages[0].keys.insert(2, multi);
+        before.pages[0]
+            .keys
+            .insert(3, KeyConfig::new("com.example.a", json!({"n": 1})));
+        before.pages[0]
+            .keys
+            .insert(4, KeyConfig::new("com.example.a", json!({"n": 1})));
+        let mut after = before.clone();
+        assert!(changed_keys(&before, &after).is_empty());
+        after.pages[0].keys.get_mut(&3).unwrap().settings = json!({"n": 2});
+        after.pages[0].keys.get_mut(&2).unwrap().groups[0][0].settings = json!({"n": 5});
+        // A key undo brings back counts as changed too.
+        after.pages[0]
+            .keys
+            .insert(5, KeyConfig::new("com.example.a", json!({})));
+        let mut changed: Vec<String> = changed_keys(&before, &after)
+            .into_iter()
+            .map(|(context, _)| context)
+            .collect();
+        changed.sort();
+        let mut expected = vec![
+            member_context(&page, 2, 0, 0),
+            context(&page, 3),
+            context(&page, 5),
+        ];
+        expected.sort();
+        assert_eq!(changed, expected);
     }
 
     #[test]
@@ -1130,6 +1434,44 @@ mod tests {
         assert_eq!(base64("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(base64("aGVs\nbG8").unwrap(), b"hello");
         assert_eq!(percent_decode("a%20b%zz"), b"a b%zz");
+    }
+
+    #[test]
+    fn image_blobs_decode_by_their_format() {
+        let rgba = decode_image_data(
+            ImageFormat::Rgba {
+                width: 2,
+                height: 1,
+            },
+            vec![9; 8],
+        )
+        .unwrap();
+        assert_eq!(rgba.dimensions(), (2, 1));
+        assert!(
+            decode_image_data(
+                ImageFormat::Rgba {
+                    width: 2,
+                    height: 2
+                },
+                vec![9; 8]
+            )
+            .is_err()
+        );
+        let mut png = Vec::new();
+        RgbaImage::from_pixel(3, 4, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(
+            decode_image_data(ImageFormat::Png, png.clone())
+                .unwrap()
+                .dimensions(),
+            (3, 4)
+        );
+        // Bytes that do not match the format are an error, not a crash.
+        assert!(decode_image_data(ImageFormat::Jpeg, png).is_err());
+        assert!(decode_image_data(ImageFormat::Png, b"junk".to_vec()).is_err());
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4" fill="red"/></svg>"#;
+        assert!(decode_image_data(ImageFormat::Svg, svg.to_vec()).is_ok());
     }
 
     #[test]

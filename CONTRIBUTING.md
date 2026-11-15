@@ -71,6 +71,47 @@ cargo dev
 
 Bash: `DECKLY_NO_DEVICES=1 cargo dev`.
 
+## Plugin SDK and CLI
+
+`deckly-sdk`, `deckly-plugin-protocol` and `deckly-cli` change often and are
+not on crates.io yet. To work on them and try them from this checkout:
+
+```sh
+cargo dev sdk
+```
+
+Checks the plugin crates and the example plugins: format, clippy with
+warnings as errors, and tests. `cargo dev sdk --fix` formats instead of only
+checking.
+
+```sh
+cargo dev install-cli
+```
+
+Runs the same checks, then installs `deckly-cli` and `cargo-deckly` from this
+checkout into Cargo's bin folder, replacing an installed copy. Nothing is
+installed when a check fails. `--no-check` skips the checks, `--debug`
+installs a debug build, which compiles faster. Run it again after each
+change to the CLI.
+
+A plugin takes `deckly-sdk` from this checkout in one of these ways:
+
+- New project: `deckly-cli create --sdk-path <checkout>`, or set
+  `DECKLY_SDK_PATH=<checkout>/crates/deckly-sdk` once per shell.
+- Every project on this computer, including ones that ask for
+  `deckly-sdk = "0.0.1"`: add to `~/.cargo/config.toml`
+
+  ```toml
+  [patch.crates-io]
+  deckly-sdk = { path = "/path/to/Deckly/crates/deckly-sdk" }
+  deckly-plugin-protocol = { path = "/path/to/Deckly/crates/deckly-plugin-protocol" }
+  ```
+
+  Remove it to go back to the published crates. Cargo warns that the patch
+  is unused in projects that do not depend on the SDK, and in this
+  repository it writes `[[patch.unused]]` entries into `Cargo.lock`. Never
+  commit those: CI has no such patch, and `--locked` fails on them.
+
 ## Check before you push
 
 ```sh

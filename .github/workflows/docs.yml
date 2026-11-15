@@ -1,0 +1,79 @@
+# Builds the plugin SDK docs (docs/sdk) with `cargo dev book`: the mdBook
+# site, the API reference and llms.txt. Every push to dev publishes them on
+# GitHub Pages; a pull request only builds them.
+#
+# Pages must be set to "GitHub Actions" in the repository settings, and the
+# github-pages environment must allow deployments from dev.
+name: Docs
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "docs/sdk/**"
+      - "crates/deckly-sdk/**"
+      - "crates/deckly-plugin-protocol/**"
+      - "examples/hello-deckly/**"
+      - "xtask/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/sdk/**"
+      - "crates/deckly-sdk/**"
+      - "crates/deckly-plugin-protocol/**"
+      - "examples/hello-deckly/**"
+      - "xtask/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install mdBook
+        run: cargo install mdbook --version 0.5.4 --locked
+
+      - name: Check the book and its examples
+        run: |
+          cargo test -p xtask --locked book
+          cargo test -p deckly-sdk --locked --doc
+          cargo test -p hello-deckly --locked
+
+      - name: Build the site
+        run: cargo dev book
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/book
+
+  deploy:
+    name: Publish
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
