@@ -27,11 +27,10 @@ plugin tool, `deckly-cli`, does the setup; you write the action.
 Once, on Windows, Linux or macOS:
 
 ```sh
-cargo install --git https://github.com/deckly-app/Deckly deckly-cli
+cargo install deckly-cli
 ```
 
-Once the crates are published on crates.io this becomes
-`cargo install deckly-cli`. The tool is also a Cargo subcommand: every
+The tool is also a Cargo subcommand: every
 `deckly-cli ...` below works as `cargo deckly ...` too.
 
 ## 3. Create the project

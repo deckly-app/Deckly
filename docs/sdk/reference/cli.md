@@ -3,7 +3,7 @@
 The plugin tool. Install it once:
 
 ```sh
-cargo install --git https://github.com/deckly-app/Deckly deckly-cli
+cargo install deckly-cli
 ```
 
 It is also installed as `cargo-deckly`, so `cargo deckly <command>` works

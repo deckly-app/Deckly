@@ -27,6 +27,8 @@ plugins keep running as before.
 
 ### For plugin authors
 
+- **On crates.io.** `deckly-sdk`, `deckly-cli` and `deckly-plugin-protocol`
+  0.0.1 are published; install the tool with `cargo install deckly-cli`.
 - **`deckly-cli`** (also `cargo deckly`): `create` starts a new plugin from
   a template (Counter or Minimal), then `build`, `dev`, `link`, `validate`,
   `pack` and `log`.
