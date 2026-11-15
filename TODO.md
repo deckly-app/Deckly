@@ -130,7 +130,7 @@ the [design draft](docs/plugin-sdk.md).
       start a listener), `--describe` and a test harness.
 - [x] SDK docs for plugin authors: the book in `docs/sdk` (getting started,
       guides, reference), the API reference and `llms.txt`, published on
-      GitHub Pages from `dev` (`cargo dev book`). Examples in it are tested.
+      GitHub Pages from `main` (`cargo dev book`). Examples in it are tested.
 - [x] A `deckly` CLI with an interactive `create` that writes a ready plugin
       crate, then `dev`, `validate` and `pack`; Getting started then starts
       from it.
