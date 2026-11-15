@@ -247,7 +247,7 @@ mod tests {
         let get = |p: &str| &files.iter().find(|f| f.path == p).unwrap().text;
         assert!(get("Cargo.toml").contains(r#"authors = ["Ada \\ Lovelace"]"#));
         assert!(get("Cargo.toml").contains(r#"license = "MIT OR Apache-2.0""#));
-        assert!(get("Cargo.toml").contains(r#"deckly-sdk = "0.0.1""#));
+        assert!(get("Cargo.toml").contains(r#"deckly-sdk = "0.0.2""#));
         assert!(
             get("src/main.rs")
                 .contains(r#"plugin!("com.ada.clock", "Ada's \"Clock\"", [Counter])"#)

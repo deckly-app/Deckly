@@ -1096,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "deckly-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "crossterm",
  "deckly-plugin-protocol",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "deckly-sdk"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "deckly-plugin-protocol",
  "serde",

@@ -2,7 +2,7 @@
 name = "deckly-cli"
 description = "Create, build, run and package Deckly plugins"
 # Versioned on its own, with the plugin crates.
-version = "0.0.1"
+version = "0.0.2"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
