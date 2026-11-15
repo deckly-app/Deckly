@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 /// This tool's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The `deckly-sdk` version new projects use from crates.io.
-pub const SDK_VERSION: &str = "0.0.1";
+pub const SDK_VERSION: &str = "0.0.2";
 
 /// Runs the tool with its arguments (without the program name) and returns
 /// the exit status: 0 done, 1 failed, 2 wrong arguments.
