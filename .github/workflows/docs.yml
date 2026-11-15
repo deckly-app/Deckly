@@ -1,14 +1,15 @@
 # Builds the plugin SDK docs (docs/sdk) with `cargo dev book`: the mdBook
-# site, the API reference and llms.txt. Every push to dev publishes them on
-# GitHub Pages; a pull request only builds them.
+# site, the API reference and llms.txt. Every push to main publishes them on
+# GitHub Pages, so the site describes the released crates; a pull request
+# and a push to dev only build them.
 #
 # Pages must be set to "GitHub Actions" in the repository settings, and the
-# github-pages environment must allow deployments from dev.
+# github-pages environment must allow deployments from main.
 name: Docs
 
 on:
   push:
-    branches: [dev]
+    branches: [main, dev]
     paths:
       - "docs/sdk/**"
       - "crates/deckly-sdk/**"
@@ -65,7 +66,7 @@ jobs:
 
   deploy:
     name: Publish
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-22.04
     permissions:
