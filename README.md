@@ -82,7 +82,7 @@ Homebrew, winget) say which command updates them instead.
 Homebrew (macOS):
 
 ```sh
-brew install auuruum/tap/deckly
+brew install deckly-app/tap/deckly
 ```
 
 Arch Linux: the `deckly-bin` AUR package is coming; until then use the

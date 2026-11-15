@@ -540,7 +540,10 @@ Checked on 2026-11-11: the name `deckly` is taken on GitHub; `deckly-app`,
   redirects, and the old `raw.githubusercontent.com/auuruum/Deckly/main/install.sh`
   still answers 200. These are the requests an installed 0.0.4 makes; an
   installed 0.0.4 itself was not run through an update.
-- The Homebrew tap is still `auuruum/homebrew-tap`; it was not moved.
+- Done on 2026-11-15: the tap moved from `auuruum/homebrew-tap` to
+  `deckly-app/homebrew-tap`, so the install command is
+  `brew install deckly-app/tap/deckly`. GitHub redirects the old address,
+  so a Mac that tapped `auuruum/tap` keeps getting updates.
 - The macOS bundle id `io.github.auuruum.deckly` stays, so the system keeps
   treating new versions as the same application.
 
