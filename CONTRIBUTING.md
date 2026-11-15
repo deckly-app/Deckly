@@ -108,7 +108,9 @@ A plugin takes `deckly-sdk` from this checkout in one of these ways:
   ```
 
   Remove it to go back to the published crates. Cargo warns that the patch
-  is unused in projects that do not depend on the SDK; that is harmless.
+  is unused in projects that do not depend on the SDK, and in this
+  repository it writes `[[patch.unused]]` entries into `Cargo.lock`. Never
+  commit those: CI has no such patch, and `--locked` fails on them.
 
 ## Check before you push
 
