@@ -140,6 +140,15 @@ the [design draft](docs/plugin-sdk.md).
       from it.
       Done: `deckly-cli` (also `cargo deckly`) with `create`, `build`, `link`,
       `unlink`, `list`, `dev`, `validate`, `pack` and `log`.
+- [ ] Have `deckly-cli create` generate `AGENTS.md` and `CLAUDE.md` in every
+      plugin template, with consistent instructions linked to the SDK docs.
+      Cover plugin best practices: action lifecycle and settings, error
+      handling, non-blocking work, protocol-safe logging and tests. Design
+      plugins for Windows, Linux and macOS from the start: portable
+      dependencies and paths, no assumptions about shells or system commands,
+      isolated platform APIs with clear unsupported errors, and build/test
+      checks on all three systems. Test that both files are generated for
+      every template and keep their guidance in sync with the SDK.
 - [x] Key faces: the plugin describes a key and Deckly draws it.
 - [x] Deckly plugin packages (`.decklyPlugin` archives) through the install
       path; plain Deckly plugin folders install already.
