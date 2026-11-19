@@ -4674,30 +4674,109 @@ fn clipboard_events(ctx: &egui::Context, enabled: bool) -> Vec<egui::Event> {
 
 /// Returns `Some(Some(hotkey))` when a combination was pressed,
 /// `Some(None)` when recording was cancelled with Esc, `None` otherwise.
+///
+/// Ctrl, Shift, Alt and Super on their own do not finish the recording:
+/// egui reports them as key presses too, and they only become part of the
+/// combination once the main key is pressed while they are held.
 pub(crate) fn capture_hotkey(ctx: &egui::Context) -> Option<Option<Hotkey>> {
-    ctx.input(|i| {
-        i.events.iter().find_map(|e| match e {
-            egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } => {
-                if *key == egui::Key::Escape && modifiers.is_none() {
-                    return Some(None);
-                }
-                Some(Some(Hotkey {
-                    ctrl: modifiers.ctrl,
-                    shift: modifiers.shift,
-                    alt: modifiers.alt,
-                    // `command` is Ctrl on Windows/Linux; only `mac_cmd` is ⌘.
-                    meta: modifiers.mac_cmd,
-                    key: key.name().to_owned(),
-                }))
+    ctx.input(|i| hotkey_from_events(&i.events))
+}
+
+/// Whether `key` is a modifier key itself rather than a key it modifies.
+fn is_modifier_key(key: egui::Key) -> bool {
+    use egui::Key;
+    matches!(
+        key,
+        Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::SuperLeft
+            | Key::SuperRight
+    )
+}
+
+fn hotkey_from_events(events: &[egui::Event]) -> Option<Option<Hotkey>> {
+    events.iter().find_map(|e| match e {
+        egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } if !is_modifier_key(*key) => {
+            if *key == egui::Key::Escape && modifiers.is_none() {
+                return Some(None);
             }
-            _ => None,
-        })
+            Some(Some(Hotkey {
+                ctrl: modifiers.ctrl,
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+                // `command` is Ctrl on Windows/Linux; only `mac_cmd` is ⌘.
+                meta: modifiers.mac_cmd,
+                key: key.name().to_owned(),
+            }))
+        }
+        _ => None,
     })
+}
+
+#[cfg(test)]
+mod capture_hotkey_tests {
+    use super::*;
+    use egui::{Event, Key, Modifiers};
+
+    fn press(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn modifiers_alone_do_not_finish_the_recording() {
+        let ctrl = Modifiers::CTRL;
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        assert_eq!(hotkey_from_events(&[press(Key::ControlLeft, ctrl)]), None);
+        assert_eq!(
+            hotkey_from_events(&[press(Key::ShiftRight, ctrl_shift)]),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_r_pressed_in_order_is_recorded_whole() {
+        let ctrl = Modifiers::CTRL;
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        // Ctrl, Shift and R all arrive within the same frame.
+        let events = [
+            press(Key::ControlLeft, ctrl),
+            press(Key::ShiftLeft, ctrl_shift),
+            press(Key::R, ctrl_shift),
+        ];
+        let got = hotkey_from_events(&events).flatten();
+        assert_eq!(
+            got,
+            Some(Hotkey {
+                ctrl: true,
+                shift: true,
+                key: "R".into(),
+                ..Hotkey::default()
+            })
+        );
+    }
+
+    #[test]
+    fn plain_escape_cancels() {
+        assert_eq!(
+            hotkey_from_events(&[press(Key::Escape, Modifiers::NONE)]),
+            Some(None)
+        );
+    }
 }
 
 #[cfg(test)]

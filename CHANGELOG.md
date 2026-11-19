@@ -62,6 +62,8 @@ plugins keep running as before.
 
 - The key settings sit in the centre of the panel.
 - Long plugin settings forms scroll.
+- Recording a hotkey takes the whole combination: pressing Ctrl, Shift and
+  R one after another records Ctrl+Shift+R, not just the first Ctrl.
 
 ### Install
 
