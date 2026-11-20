@@ -599,12 +599,13 @@ mod tests {
                 | Step::File { to, .. }
                 | Step::Bundle { to, .. } => to,
             };
+            // install.sh names paths with `/`, whatever system runs the test.
             let rel = to
                 .strip_prefix(prefix)
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .to_owned();
+                .replace('\\', "/");
             if rel.starts_with("lib/deckly/") {
                 continue;
             }

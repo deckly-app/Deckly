@@ -4,3 +4,5 @@
 # with Windows line endings, so they stay LF in every checkout.
 packaging/** text eol=lf
 *.sh text eol=lf
+# Installed on Linux as is, and read by the install tests on every system.
+assets/linux/** text eol=lf
