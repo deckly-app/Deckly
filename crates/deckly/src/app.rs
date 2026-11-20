@@ -244,6 +244,8 @@ pub struct App {
     /// the form's own state.
     plugin_settings: Option<PluginSettings>,
     app_picker: Option<crate::app_picker::Picker>,
+    /// The monitors the Open action's inspector offers.
+    open_monitors: crate::open_window::Monitors,
     image_editor: Option<crate::image_editor::Editor>,
     /// Finds FFmpeg for video import, and offers to set it up.
     video_setup: crate::video_setup::VideoSetup,
@@ -319,6 +321,7 @@ impl App {
             key_form: Default::default(),
             plugin_settings: None,
             app_picker: None,
+            open_monitors: Default::default(),
             image_editor: None,
             video_setup: Default::default(),
             wallpaper_editor: None,
@@ -2912,6 +2915,7 @@ impl App {
                     crate::app_picker::apply(key, &app);
                 }
                 ui.end_row();
+                crate::open_window::rows(ui, &mut key.settings, &mut self.open_monitors, &label);
             }
             actions::WEBSITE => {
                 label(ui, "URL");
@@ -5422,6 +5426,7 @@ mod clipboard_tests {
             key_form: Default::default(),
             plugin_settings: None,
             app_picker: None,
+            open_monitors: Default::default(),
             image_editor: None,
             video_setup: Default::default(),
             wallpaper_editor: None,

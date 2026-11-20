@@ -11,6 +11,7 @@ pub mod autostart;
 pub mod elevate;
 pub mod instance;
 pub mod main_thread;
+pub mod placement;
 pub mod screen_lock;
 pub mod secrets;
 pub mod tray;
