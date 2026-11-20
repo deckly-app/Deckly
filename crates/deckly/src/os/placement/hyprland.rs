@@ -1,8 +1,14 @@
 //! Hyprland: the compositor starts the program itself, with rules for the
 //! windows that program opens (`exec` with rules). Hyprland ties a window to
-//! the rules through the process that opened it, so a program that only
-//! wakes up a running copy, or that D-Bus starts for `gio launch`, opens
-//! without them.
+//! the rules through the chain of parent processes, which a launcher breaks
+//! when it starts the real program and exits (spotify-launcher does): the
+//! program is then a child of systemd. So the command runs in a session of
+//! its own (`setsid`), which every process it starts keeps, and Deckly
+//! follows Hyprland's window events for a while and places each new window
+//! of a process in that session or below its first process. (An
+//! environment variable would not do: Chromium-based programs overwrite
+//! what `/proc/PID/environ` shows.) A program that only wakes up a running
+//! copy, or that D-Bus starts for `gio launch`, still opens where it would.
 //!
 //! Hyprland is asked over its control socket. Since 0.55 it takes Lua
 //! (`eval hl.dispatch(hl.dsp.exec_cmd(...))`); older versions take
@@ -15,7 +21,7 @@ use serde::Deserialize;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Hyprland answers in milliseconds; a hung compositor must not hang a key.
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -24,8 +30,26 @@ const MAX_REPLY: u64 = 1024 * 1024;
 const MAX_MONITORS: usize = 32;
 /// Longest command handed to Hyprland.
 const MAX_COMMAND: usize = 16 * 1024;
+/// How long windows of the started program are placed. Launchers may
+/// update before they start the program.
+const FOLLOW: Duration = Duration::from_secs(30);
+/// A `/proc/PID/stat` line is a few hundred bytes.
+const MAX_STAT: u64 = 4096;
+/// How far up the parent chain a window's process is looked for.
+const MAX_ANCESTORS: usize = 64;
+/// Longest line of Hyprland's event socket that is read whole.
+const MAX_EVENT_LINE: usize = 4096;
 
 fn socket() -> Option<PathBuf> {
+    socket_named(".socket.sock")
+}
+
+/// Hyprland's event socket.
+fn events() -> Option<PathBuf> {
+    socket_named(".socket2.sock")
+}
+
+fn socket_named(file: &str) -> Option<PathBuf> {
     let signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
     // It names a folder; anything else is not Hyprland's.
     if signature.is_empty()
@@ -43,7 +67,7 @@ fn socket() -> Option<PathBuf> {
     [runtime, Some(PathBuf::from("/tmp/hypr"))]
         .into_iter()
         .flatten()
-        .map(|dir| dir.join(&signature).join(".socket.sock"))
+        .map(|dir| dir.join(&signature).join(file))
         .find(|path| path.exists())
 }
 
@@ -170,13 +194,35 @@ fn start(command: &str, placement: &Placement, notes: &mut Vec<String>) -> Resul
         state: placement.state,
         layout: placement.layout,
     };
-    let reply = request(&format!("eval {}", rules.lua(command)))?;
+    // The session's first process writes its id here.
+    let session_file = session_file();
+    let started = match &session_file {
+        Some(file) => in_own_session(command, file),
+        None => command.to_owned(),
+    };
+    // Listening before the program starts, so no window is missed.
+    let listening = session_file.and_then(|file| {
+        let stream = UnixStream::connect(events()?).ok()?;
+        Some((stream, file))
+    });
+    let reply = request(&format!("eval {}", rules.lua(&started)))?;
     if reply.trim() == "ok" {
+        if let Some((stream, file)) = listening {
+            let follow = move || follow(stream, &file, &rules);
+            if std::thread::Builder::new()
+                .name("deckly-place-window".into())
+                .stack_size(256 * 1024)
+                .spawn(follow)
+                .is_err()
+            {
+                notes.push("windows that a launcher opens could not be followed".into());
+            }
+        }
         return Ok(());
     }
     // Hyprland before Lua. A Lua error comes before anything starts, so
     // this does not start the program twice.
-    let classic = request(&rules.classic(command))?;
+    let classic = request(&rules.classic(&started))?;
     if classic.trim() == "ok" {
         return Ok(());
     }
@@ -189,6 +235,134 @@ fn start(command: &str, placement: &Placement, notes: &mut Vec<String>) -> Resul
         "Hyprland refused it: {}",
         reply.trim().chars().take(300).collect::<String>()
     ))
+}
+
+/// A file only this launch uses, in the user's private runtime folder.
+fn session_file() -> Option<PathBuf> {
+    if !found(Path::new("setsid")) {
+        return None;
+    }
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    Some(PathBuf::from(dir).join(format!("deckly-open-{}-{nanos:x}", std::process::id())))
+}
+
+/// `command` in a new session whose first process writes its id to `file`.
+fn in_own_session(command: &str, file: &Path) -> String {
+    let inner = format!("printf '%s' \"$$\" > {}; {command}", sh_path(file));
+    format!("exec setsid sh -c {}", sh_word(&inner))
+}
+
+/// Places every window that opens within [`FOLLOW`] and belongs to the
+/// session whose id the started command writes to `file`.
+fn follow(stream: UnixStream, file: &Path, rules: &Rules) {
+    use std::io::BufRead;
+    let deadline = Instant::now() + FOLLOW;
+    let mut lines = std::io::BufReader::new(stream);
+    let mut line = Vec::new();
+    let mut session = None;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || lines.get_ref().set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        line.clear();
+        match (&mut lines)
+            .take(MAX_EVENT_LINE as u64)
+            .read_until(b'\n', &mut line)
+        {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let Some(address) = opened_window(&String::from_utf8_lossy(&line)) else {
+            continue;
+        };
+        if session.is_none() {
+            session = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .filter(|&id| id > 1);
+            if session.is_some() {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        let Some(session) = session else {
+            continue;
+        };
+        if window_pid(&address).is_some_and(|pid| started_by(pid, session)) {
+            let _ = request(&format!("eval {}", rules.place(&address)));
+        }
+    }
+    let _ = std::fs::remove_file(file);
+}
+
+/// The window address in an `openwindow>>ADDRESS,WORKSPACE,CLASS,TITLE`
+/// event, as `0x...`.
+fn opened_window(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("openwindow>>")?;
+    let address = rest.split(',').next()?;
+    let valid = !address.is_empty()
+        && address.len() <= 16
+        && address.chars().all(|c| c.is_ascii_hexdigit());
+    valid.then(|| format!("0x{address}"))
+}
+
+#[derive(Deserialize)]
+struct Client {
+    address: String,
+    pid: i64,
+}
+
+fn window_pid(address: &str) -> Option<u32> {
+    let clients: Vec<Client> = serde_json::from_str(&request("j/clients").ok()?).ok()?;
+    let pid = clients.into_iter().find(|c| c.address == address)?.pid;
+    u32::try_from(pid).ok().filter(|&pid| pid > 1)
+}
+
+/// Whether `pid` is in the session `session` or below its first process.
+fn started_by(pid: u32, session: u32) -> bool {
+    let mut current = pid;
+    for _ in 0..MAX_ANCESTORS {
+        let Some(stat) = process_stat(current) else {
+            return false;
+        };
+        if current == session || stat.session == session {
+            return true;
+        }
+        if stat.parent <= 1 {
+            return false;
+        }
+        current = stat.parent;
+    }
+    false
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Stat {
+    parent: u32,
+    session: u32,
+}
+
+fn process_stat(pid: u32) -> Option<Stat> {
+    let mut text = String::new();
+    std::fs::File::open(format!("/proc/{pid}/stat"))
+        .and_then(|f| f.take(MAX_STAT).read_to_string(&mut text))
+        .ok()?;
+    parse_stat(&text)
+}
+
+/// `PID (NAME) STATE PARENT GROUP SESSION ...`; the name may hold spaces
+/// and parentheses, so the fields are counted after its last `)`.
+fn parse_stat(text: &str) -> Option<Stat> {
+    let (_, rest) = text.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    let parent = fields.next()?.parse().ok()?;
+    let _group = fields.next()?;
+    let session = fields.next()?.parse().ok()?;
+    Some(Stat { parent, session })
 }
 
 struct Rules {
@@ -218,6 +392,44 @@ impl Rules {
             lua_string(command),
             rules.join(", ")
         )
+    }
+
+    /// Lua that places an open window, for windows the exec rules missed.
+    /// Each step sets a state rather than toggling it, so a window the rules
+    /// already placed stays as it is.
+    fn place(&self, address: &str) -> String {
+        let window = lua_string(&format!("address:{address}"));
+        let mut steps = Vec::new();
+        if let Some(m) = &self.monitor {
+            steps.push(format!(
+                "hl.dsp.window.move({{monitor={}, window={window}, follow=false}})",
+                lua_string(m)
+            ));
+        }
+        match self.layout {
+            Layout::Floating => steps.push(format!(
+                "hl.dsp.window.float({{action=\"enable\", window={window}}})"
+            )),
+            Layout::Tiled => steps.push(format!(
+                "hl.dsp.window.float({{action=\"disable\", window={window}}})"
+            )),
+            Layout::Default => {}
+        }
+        // Mode 1 is Hyprland's maximize, mode 0 full screen.
+        match self.state {
+            WindowState::Maximized => steps.push(format!(
+                "hl.dsp.window.fullscreen({{mode=1, action=\"set\", window={window}}})"
+            )),
+            WindowState::Fullscreen => steps.push(format!(
+                "hl.dsp.window.fullscreen({{mode=0, action=\"set\", window={window}}})"
+            )),
+            _ => {}
+        }
+        steps
+            .iter()
+            .map(|step| format!("hl.dispatch({step})"))
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 
     fn classic(&self, command: &str) -> String {
@@ -402,6 +614,80 @@ mod tests {
     }
 
     #[test]
+    fn open_windows_are_placed_by_setting_not_toggling() {
+        let rules = Rules {
+            monitor: Some("HDMI-A-1".into()),
+            state: WindowState::Maximized,
+            layout: Layout::Tiled,
+        };
+        assert_eq!(
+            rules.place("0x5649"),
+            "hl.dispatch(hl.dsp.window.move({monitor=\"HDMI-A-1\", window=\"address:0x5649\", follow=false})); \
+             hl.dispatch(hl.dsp.window.float({action=\"disable\", window=\"address:0x5649\"})); \
+             hl.dispatch(hl.dsp.window.fullscreen({mode=1, action=\"set\", window=\"address:0x5649\"}))"
+        );
+    }
+
+    #[test]
+    fn reads_opened_windows_from_events() {
+        assert_eq!(
+            opened_window("openwindow>>56493e2a9530,2,Spotify,Spotify Free\n").as_deref(),
+            Some("0x56493e2a9530")
+        );
+        assert_eq!(opened_window("closewindow>>56493e2a9530\n"), None);
+        assert_eq!(opened_window("openwindow>>,2,x,y"), None);
+        assert_eq!(opened_window("openwindow>>zz\"),1,x"), None);
+        assert_eq!(opened_window("openwindow>>12345678901234567,1,x,y"), None);
+    }
+
+    #[test]
+    fn reads_parent_and_session_past_odd_names() {
+        assert_eq!(
+            parse_stat("57243 (spotify) S 876 1283 1283 0 -1 4194560"),
+            Some(Stat {
+                parent: 876,
+                session: 1283
+            })
+        );
+        assert_eq!(
+            parse_stat("9 (a) b (c)) R 2 3 4 0"),
+            Some(Stat {
+                parent: 2,
+                session: 4
+            })
+        );
+        assert_eq!(parse_stat("9 (x"), None);
+        assert_eq!(parse_stat("9 (x) S y 3 4"), None);
+    }
+
+    #[test]
+    fn this_process_is_in_its_own_session() {
+        let me = std::process::id();
+        let session = process_stat(me).unwrap().session;
+        assert!(started_by(me, session));
+        assert!(started_by(me, me));
+        assert!(!started_by(me, u32::MAX));
+    }
+
+    #[test]
+    fn the_command_runs_in_a_session_of_its_own() {
+        let dir = std::env::temp_dir().join(format!("deckly-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("it's an id");
+        let line = in_own_session("exec true", &file);
+        assert!(line.starts_with("exec setsid sh -c "), "{line}");
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&line)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let id: u32 = std::fs::read_to_string(&file).unwrap().parse().unwrap();
+        assert!(id > 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn lua_strings_cannot_be_escaped() {
         assert_eq!(lua_string(r#"a"b\c"#), r#""a\"b\\c""#);
         assert_eq!(lua_string("x\n\u{7}"), r#""x\010\007""#);
@@ -468,6 +754,18 @@ mod live {
     #[test]
     #[ignore = "requires Hyprland with two monitors and kitty; opens a window"]
     fn opens_floating_on_the_chosen_monitor() {
+        check("kitty --class {class}");
+    }
+
+    /// As a launcher does: the program outlives the process that started
+    /// it, so Hyprland's exec rules miss it.
+    #[test]
+    #[ignore = "requires Hyprland with two monitors and kitty; opens a window"]
+    fn places_a_window_whose_launcher_exited() {
+        check("sh -c 'kitty --class {class} >/dev/null 2>&1 &'");
+    }
+
+    fn check(command: &str) {
         let all: Vec<serde_json::Value> =
             serde_json::from_str(&request("j/monitors").unwrap()).unwrap();
         let target = all
@@ -480,14 +778,14 @@ mod live {
             .into_iter()
             .find(|m| m.port == target)
             .unwrap();
-        let class = format!("deckly-placement-{}", std::process::id());
+        let class = format!("deckly-placement-{}-{}", std::process::id(), command.len());
         let placement = Placement {
             monitor: monitor.id.clone(),
             layout: Layout::Floating,
             ..Placement::default()
         };
         assert!(
-            open(&format!("kitty --class {class}"), &placement)
+            open(&command.replace("{class}", &class), &placement)
                 .unwrap()
                 .is_empty()
         );
