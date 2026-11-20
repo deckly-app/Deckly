@@ -1,10 +1,12 @@
 //! What the terminal can show: whether to ask questions and whether to use
 //! colour, the colours themselves, and the banner.
 //!
-//! Only the 16 basic colours are used, so every theme (light or dark)
+//! Text uses only the 16 basic colours, so every theme (light or dark)
 //! picks its own shades; `NO_COLOR`, `CLICOLOR=0` and `TERM=dumb` turn the
 //! colours off, `CLICOLOR_FORCE` and `FORCE_COLOR` turn them on. The
 //! banner is plain ASCII: it reads the same in every font and terminal.
+//! A terminal that says it shows 24-bit colour gets the banner in the
+//! logo's blue-to-violet gradient; any other gets it in plain cyan.
 
 use std::fmt::Display;
 use std::io::IsTerminal;
@@ -22,6 +24,16 @@ const BANNER: [&str; 6] = [
 
 /// The banner's width in columns.
 const BANNER_WIDTH: usize = 35;
+
+/// The logo's colours from left to right (`assets/logo/deckly.svg`), the
+/// stops of the banner's gradient.
+const GRADIENT: [[u8; 3]; 5] = [
+    [0x3d, 0x8b, 0xfd],
+    [0x51, 0x7f, 0xfb],
+    [0x64, 0x74, 0xfa],
+    [0x78, 0x68, 0xf8],
+    [0x8b, 0x5c, 0xf6],
+];
 
 /// Whether the tool may ask questions: a real terminal on both ends, one
 /// that is not `dumb`, and (on Windows) one that understands escape codes.
@@ -44,6 +56,44 @@ fn env(name: &str) -> Option<String> {
 
 fn is_dumb(term: Option<&str>) -> bool {
     term == Some("dumb")
+}
+
+/// Whether the terminal shows 24-bit colour. Terminals that do say so in
+/// `COLORTERM`; Windows Terminal does not, but sets `WT_SESSION`.
+fn truecolor(get: impl Fn(&str) -> Option<String>) -> bool {
+    matches!(get("COLORTERM").as_deref(), Some("truecolor" | "24bit"))
+        || get("WT_SESSION").is_some_and(|v| !v.is_empty())
+}
+
+/// The gradient's colour at `x` of `width` columns, from the first stop at
+/// the left edge to the last at the right.
+fn gradient_at(x: usize, width: usize) -> [u8; 3] {
+    let last = GRADIENT.len() - 1;
+    let pos = if width > 1 {
+        x.min(width - 1) as f32 / (width - 1) as f32 * last as f32
+    } else {
+        0.0
+    };
+    let i = (pos as usize).min(last - 1);
+    let t = pos - i as f32;
+    let (a, b) = (GRADIENT[i], GRADIENT[i + 1]);
+    let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+    [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2])]
+}
+
+/// One banner line in the gradient, each column in its own colour.
+fn gradient_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len() * 20);
+    for (x, c) in line.chars().enumerate() {
+        if c == ' ' {
+            out.push(c);
+        } else {
+            let [r, g, b] = gradient_at(x, BANNER_WIDTH);
+            out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{c}"));
+        }
+    }
+    out.push_str("\x1b[0m");
+    out
 }
 
 /// The colour rules, with the environment passed in so they can be tested.
@@ -114,8 +164,13 @@ pub fn columns() -> usize {
 pub fn welcome() {
     println!();
     if columns() > BANNER_WIDTH {
+        let gradient = color() && truecolor(env);
         for line in BANNER {
-            println!("{}", cyan(line));
+            if gradient {
+                println!("{}", gradient_line(line));
+            } else {
+                println!("{}", cyan(line));
+            }
         }
         println!();
     }
@@ -175,6 +230,64 @@ mod tests {
         // it replaced started most of them with a space.
         for line in &BANNER[1..=4] {
             assert!(line.starts_with('|'), "{line}");
+        }
+    }
+
+    #[test]
+    fn only_a_terminal_that_says_so_gets_truecolor() {
+        let with = |vars: &'static [(&str, &str)]| {
+            truecolor(|name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_owned())
+            })
+        };
+        assert!(with(&[("COLORTERM", "truecolor")]));
+        assert!(with(&[("COLORTERM", "24bit")]));
+        assert!(with(&[("WT_SESSION", "1b2c")]));
+        assert!(!with(&[]));
+        assert!(!with(&[("COLORTERM", "")]));
+        assert!(!with(&[("COLORTERM", "yes")]));
+        assert!(!with(&[("TERM", "xterm-256color")]));
+    }
+
+    #[test]
+    fn the_gradient_runs_from_the_first_stop_to_the_last() {
+        assert_eq!(gradient_at(0, BANNER_WIDTH), GRADIENT[0]);
+        assert_eq!(gradient_at(BANNER_WIDTH - 1, BANNER_WIDTH), GRADIENT[4]);
+        // Past the edge and a one-column width stay on the stops.
+        assert_eq!(gradient_at(BANNER_WIDTH + 10, BANNER_WIDTH), GRADIENT[4]);
+        assert_eq!(gradient_at(5, 1), GRADIENT[0]);
+        assert_eq!(gradient_at(0, 0), GRADIENT[0]);
+        // Blue fades into violet: red rises and green falls column by column.
+        for x in 1..BANNER_WIDTH {
+            let (a, b) = (
+                gradient_at(x - 1, BANNER_WIDTH),
+                gradient_at(x, BANNER_WIDTH),
+            );
+            assert!(b[0] >= a[0] && b[1] <= a[1], "{x}: {a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn a_gradient_line_keeps_the_text_and_resets() {
+        for line in BANNER {
+            let painted = gradient_line(line);
+            assert!(painted.ends_with("\x1b[0m"));
+            let mut plain = String::new();
+            let mut chars = painted.chars();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    for c in chars.by_ref() {
+                        if c == 'm' {
+                            break;
+                        }
+                    }
+                } else {
+                    plain.push(c);
+                }
+            }
+            assert_eq!(plain, line);
         }
     }
 
