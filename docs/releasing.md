@@ -64,11 +64,17 @@ DECKLY_ARCHIVE=dist/deckly-x86_64-unknown-linux-gnu.tar.gz DECKLY_PREFIX=/tmp/de
    install scripts and Deckly's update check follow GitHub's latest
    release, which skips pre-releases. Running copies offer the update within
    a day.
-6. Homebrew: copy the `deckly.rb` asset to `Formula/deckly.rb` in
-   `deckly-app/homebrew-tap`, commit and push. Skipping this leaves
-   `brew upgrade` on the old version.
-7. AUR: unpack `aur-deckly-bin.tar.gz` into a clone of
-   `ssh://aur@aur.archlinux.org/deckly-bin.git`, commit and push.
+6. Homebrew follows by itself: publishing the release runs the Homebrew
+   workflow (`.github/workflows/homebrew.yml`), which puts the release's
+   `deckly.rb` into `Formula/deckly.rb` of `deckly-app/homebrew-tap`. It
+   needs the repository secret `HOMEBREW_TAP_TOKEN`, a fine-grained token
+   for `deckly-app/homebrew-tap` with Contents read and write. When it
+   fails (an expired token), fix the secret and run the workflow by hand
+   with the tag.
+7. AUR is not set up yet: there is no AUR account for Deckly. Each release
+   still carries `aur-deckly-bin.tar.gz`; once the account exists, unpack it
+   into a clone of `ssh://aur@aur.archlinux.org/deckly-bin.git`, commit and
+   push, or automate it the way the Homebrew workflow does.
 
 ## winget (not set up yet)
 
