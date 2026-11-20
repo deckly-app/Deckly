@@ -8,9 +8,12 @@
 //! - `cargo dev sdk`: check the plugin crates and examples.
 //! - `cargo dev install-cli`: check them, then install this checkout's
 //!   plugin tool.
+//! - `cargo dev install`: build this checkout and install it for the current
+//!   user where a release install goes, with the plugin tool.
 
 mod book;
 mod dist;
+mod install;
 mod licenses;
 mod plugin_tools;
 mod release_files;
@@ -27,6 +30,7 @@ fn main() -> ExitCode {
         Some("book") => book::run(args.skip(1)).map(|()| true),
         Some("sdk") => plugin_tools::check(args.skip(1)),
         Some("install-cli") => plugin_tools::install(args.skip(1)),
+        Some("install") => install::run(args.skip(1)),
         _ => run(args),
     };
     match result {
@@ -86,7 +90,11 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {
              Checks the plugin crates and examples: format, clippy, tests.\n\
              \n\
              cargo dev install-cli [--no-check] [--debug]\n\
-             Checks them, then installs deckly-cli and cargo-deckly from this checkout."
+             Checks them, then installs deckly-cli and cargo-deckly from this checkout.\n\
+             \n\
+             cargo dev install [--debug] [--no-cli] [--prefix <dir>]\n\
+             Builds this checkout and installs it where install.sh puts Deckly,\n\
+             replacing that install, then installs the plugin tool (Linux, macOS)."
         );
         return Ok(true);
     }

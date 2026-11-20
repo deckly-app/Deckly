@@ -84,12 +84,12 @@ fn open_path(path: &Path) -> io::Result<()> {
 /// The error for a file the system cannot run ("exec format error").
 const ENOEXEC: i32 = 8;
 
-fn is_program(path: &Path) -> bool {
+pub(super) fn is_program(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-fn is_url(target: &str) -> bool {
+pub(super) fn is_url(target: &str) -> bool {
     if target.starts_with("mailto:") {
         return true;
     }
@@ -101,13 +101,13 @@ fn is_url(target: &str) -> bool {
     })
 }
 
-fn home() -> Option<PathBuf> {
+pub(super) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
 }
 
-fn home_path(text: &str) -> PathBuf {
+pub(super) fn home_path(text: &str) -> PathBuf {
     match (text.strip_prefix("~/"), home()) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(text),

@@ -20,7 +20,9 @@ use crate::theme::*;
 use crate::update::{self, Method};
 use crate::wallpaper::{Layers, WallpaperEditor};
 use deckly_core::profile::{self, MAX_FOLDER_DEPTH, MAX_GROUP_ACTIONS};
-use deckly_core::{ActionDelays, AutoExit, DeviceKind, KeyConfig, Page, Profile, TitleStyle};
+use deckly_core::{
+    ActionDelays, AutoExit, DeviceKind, KeyConfig, Page, Profile, Protection, TitleStyle,
+};
 use deckly_plugin_host::{Host, Status};
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CornerRadius, Rect, RichText, Sense, Stroke, TextureHandle,
@@ -242,6 +244,8 @@ pub struct App {
     /// the form's own state.
     plugin_settings: Option<PluginSettings>,
     app_picker: Option<crate::app_picker::Picker>,
+    /// The monitors the Open action's inspector offers.
+    open_monitors: crate::open_window::Monitors,
     image_editor: Option<crate::image_editor::Editor>,
     /// Finds FFmpeg for video import, and offers to set it up.
     video_setup: crate::video_setup::VideoSetup,
@@ -317,6 +321,7 @@ impl App {
             key_form: Default::default(),
             plugin_settings: None,
             app_picker: None,
+            open_monitors: Default::default(),
             image_editor: None,
             video_setup: Default::default(),
             wallpaper_editor: None,
@@ -1287,6 +1292,9 @@ impl App {
                         egui::epaint::RectShape::filled(inner, inner_radius, Color32::WHITE)
                             .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
                     );
+                    if key.protect.is_some() {
+                        protect_badge(&painter, inner);
+                    }
                 }
                 // An empty key shows its piece of the wallpaper.
                 None if backdrop.is_some() => {
@@ -1416,6 +1424,23 @@ impl App {
                     keys.remove(&index);
                     changed = true;
                     ui.close();
+                }
+                if let Some(key) = keys
+                    .get_mut(&index)
+                    .filter(|k| Protection::allowed(&k.action))
+                {
+                    ui.separator();
+                    let glyph = if key.protect.is_some() {
+                        icon::SHIELD_CHECK
+                    } else {
+                        icon::SHIELD
+                    };
+                    ui.menu_button(format!("{glyph}  Protect…"), |ui| {
+                        ui.set_width(270.0);
+                        let before = key.protect;
+                        protect_controls(ui, &mut key.protect);
+                        changed |= key.protect != before;
+                    });
                 }
             });
         }
@@ -2359,12 +2384,18 @@ impl App {
                     };
                 }
             }
-            if group.is_some() {
+            let protectable = top_level && Protection::allowed(&key.action);
+            if group.is_some() || protectable {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(16.0);
-                    remove = icon_button(ui, icon::TRASH, "Remove").clicked();
-                    if in_sequence && key.action != actions::DELAY {
+                    if group.is_some() {
+                        remove = icon_button(ui, icon::TRASH, "Remove").clicked();
                         ui.add_space(4.0);
+                    }
+                    if protectable {
+                        protect_button(ui, &mut key.protect);
+                    }
+                    if in_sequence && key.action != actions::DELAY {
                         delays_button(ui, &mut key.delays);
                     }
                 });
@@ -2884,6 +2915,7 @@ impl App {
                     crate::app_picker::apply(key, &app);
                 }
                 ui.end_row();
+                crate::open_window::rows(ui, &mut key.settings, &mut self.open_monitors, &label);
             }
             actions::WEBSITE => {
                 label(ui, "URL");
@@ -3638,7 +3670,7 @@ fn banner_message(ui: &mut Ui, view: &BannerView, wrap: bool) -> Rect {
             ui.label(RichText::new(icon::ARROW_CIRCLE_UP).color(ACCENT));
             RichText::new(format!(
                 "Deckly {latest} is available. You have {}.",
-                env!("CARGO_PKG_VERSION")
+                update::version_label()
             ))
         }
         BannerView::Downloading { latest } => {
@@ -4245,6 +4277,127 @@ fn reset_folder_auto_exit(profile: &mut Profile, folder: &str) -> bool {
     changed
 }
 
+/// The modes of protection against accidental presses, in the order the
+/// popup lists them: their name, short name and what each does.
+const PROTECT_MODES: [(Option<Protection>, &str, &str, &str); 4] = [
+    (
+        Some(Protection::Hold {
+            ms: Protection::HOLD_DEFAULT_MS,
+        }),
+        "Hold to run (recommended)",
+        "Hold",
+        "Runs once the key is held this long; letting go earlier does nothing.",
+    ),
+    (
+        Some(Protection::Twice {
+            ms: Protection::WINDOW_DEFAULT_MS,
+        }),
+        "Press twice",
+        "Twice",
+        "The first press arms the key; a second press within this time runs it.",
+    ),
+    (
+        Some(Protection::Confirm {
+            ms: Protection::TIMEOUT_DEFAULT_MS,
+            shuffle: false,
+        }),
+        "Confirm screen",
+        "Confirm",
+        "Asks Yes or No on the device; it closes by itself after this time.",
+    ),
+    (None, "Off", "", "The action runs on a plain press."),
+];
+
+/// Which entry of [`PROTECT_MODES`] a setting is.
+fn protect_mode(setting: Option<Protection>) -> usize {
+    match setting {
+        Some(Protection::Hold { .. }) => 0,
+        Some(Protection::Twice { .. }) => 1,
+        Some(Protection::Confirm { .. }) => 2,
+        None => 3,
+    }
+}
+
+/// The quiet shield of the key form. Off it is a dim icon; on, an amber
+/// shield with the mode's short name. Its popup holds the settings.
+fn protect_button(ui: &mut Ui, setting: &mut Option<Protection>) {
+    let (_, _, short, _) = PROTECT_MODES[protect_mode(*setting)];
+    let text = match setting {
+        Some(_) => RichText::new(format!("{}  {short}", icon::SHIELD_CHECK)).color(WARNING),
+        None => RichText::new(icon::SHIELD).size(17.0).color(TEXT_DIM),
+    };
+    let resp = ui
+        .add(egui::Button::new(text).frame(false))
+        .on_hover_text("Protect from accidental presses");
+    egui::Popup::from_toggle_button_response(&resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(4.0)
+        .frame(egui::Frame::popup(ui.style()).inner_margin(egui::Margin::same(14)))
+        .show(|ui| {
+            ui.set_width(270.0);
+            ui.label(RichText::new("Protect from accidental presses").font(bold(13.0)));
+            ui.separator();
+            protect_controls(ui, setting);
+        });
+}
+
+/// The settings of a key's protection: a mode, its time, and what it does.
+fn protect_controls(ui: &mut Ui, setting: &mut Option<Protection>) {
+    let current = protect_mode(*setting);
+    for (i, (mode, name, _, _)) in PROTECT_MODES.iter().enumerate() {
+        if ui.radio(i == current, *name).clicked() && i != current {
+            *setting = *mode;
+        }
+    }
+    if let Some(protect) = setting {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let label = match protect {
+                Protection::Hold { .. } => "Hold for",
+                Protection::Twice { .. } => "Second press within",
+                Protection::Confirm { .. } => "Closes after",
+            };
+            ui.label(RichText::new(label).color(TEXT_DIM));
+            let (min, max) = protect.range();
+            let mut seconds = protect.ms() as f32 / 1000.0;
+            let changed = ui
+                .add(
+                    egui::DragValue::new(&mut seconds)
+                        .range(min as f32 / 1000.0..=max as f32 / 1000.0)
+                        .speed(0.05)
+                        .fixed_decimals(1)
+                        .suffix(" s"),
+                )
+                .changed();
+            if changed {
+                *protect = protect.with_ms((seconds * 1000.0).round() as u32);
+            }
+        });
+    }
+    if let Some(Protection::Confirm { shuffle, .. }) = setting {
+        ui.checkbox(shuffle, "Shuffle button positions")
+            .on_hover_text("Place Yes, No and Back anew each time the screen opens");
+    }
+    ui.add_space(6.0);
+    let (_, _, _, what) = PROTECT_MODES[protect_mode(*setting)];
+    ui.label(RichText::new(what).small().color(TEXT_DIM));
+}
+
+/// Marks a protected key in the editor's grid.
+fn protect_badge(painter: &egui::Painter, key: Rect) {
+    let radius = (key.width() * 0.12).clamp(7.0, 11.0);
+    let center = pos2(key.right() - radius - 3.0, key.top() + radius + 3.0);
+    painter.circle_filled(center, radius, Color32::from_black_alpha(200));
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        icon::SHIELD_CHECK,
+        font(radius * 1.3),
+        WARNING,
+    );
+}
+
 /// An individual action can follow its folder, opt out, or use its own delay.
 fn folder_exit_button(ui: &mut Ui, setting: &mut Option<AutoExit>, inherited: AutoExit) {
     let response = icon_button(ui, icon::ARROW_BEND_LEFT_UP, "Folder Exit");
@@ -4525,30 +4678,109 @@ fn clipboard_events(ctx: &egui::Context, enabled: bool) -> Vec<egui::Event> {
 
 /// Returns `Some(Some(hotkey))` when a combination was pressed,
 /// `Some(None)` when recording was cancelled with Esc, `None` otherwise.
+///
+/// Ctrl, Shift, Alt and Super on their own do not finish the recording:
+/// egui reports them as key presses too, and they only become part of the
+/// combination once the main key is pressed while they are held.
 pub(crate) fn capture_hotkey(ctx: &egui::Context) -> Option<Option<Hotkey>> {
-    ctx.input(|i| {
-        i.events.iter().find_map(|e| match e {
-            egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } => {
-                if *key == egui::Key::Escape && modifiers.is_none() {
-                    return Some(None);
-                }
-                Some(Some(Hotkey {
-                    ctrl: modifiers.ctrl,
-                    shift: modifiers.shift,
-                    alt: modifiers.alt,
-                    // `command` is Ctrl on Windows/Linux; only `mac_cmd` is ⌘.
-                    meta: modifiers.mac_cmd,
-                    key: key.name().to_owned(),
-                }))
+    ctx.input(|i| hotkey_from_events(&i.events))
+}
+
+/// Whether `key` is a modifier key itself rather than a key it modifies.
+fn is_modifier_key(key: egui::Key) -> bool {
+    use egui::Key;
+    matches!(
+        key,
+        Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::SuperLeft
+            | Key::SuperRight
+    )
+}
+
+fn hotkey_from_events(events: &[egui::Event]) -> Option<Option<Hotkey>> {
+    events.iter().find_map(|e| match e {
+        egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } if !is_modifier_key(*key) => {
+            if *key == egui::Key::Escape && modifiers.is_none() {
+                return Some(None);
             }
-            _ => None,
-        })
+            Some(Some(Hotkey {
+                ctrl: modifiers.ctrl,
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+                // `command` is Ctrl on Windows/Linux; only `mac_cmd` is ⌘.
+                meta: modifiers.mac_cmd,
+                key: key.name().to_owned(),
+            }))
+        }
+        _ => None,
     })
+}
+
+#[cfg(test)]
+mod capture_hotkey_tests {
+    use super::*;
+    use egui::{Event, Key, Modifiers};
+
+    fn press(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn modifiers_alone_do_not_finish_the_recording() {
+        let ctrl = Modifiers::CTRL;
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        assert_eq!(hotkey_from_events(&[press(Key::ControlLeft, ctrl)]), None);
+        assert_eq!(
+            hotkey_from_events(&[press(Key::ShiftRight, ctrl_shift)]),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_r_pressed_in_order_is_recorded_whole() {
+        let ctrl = Modifiers::CTRL;
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        // Ctrl, Shift and R all arrive within the same frame.
+        let events = [
+            press(Key::ControlLeft, ctrl),
+            press(Key::ShiftLeft, ctrl_shift),
+            press(Key::R, ctrl_shift),
+        ];
+        let got = hotkey_from_events(&events).flatten();
+        assert_eq!(
+            got,
+            Some(Hotkey {
+                ctrl: true,
+                shift: true,
+                key: "R".into(),
+                ..Hotkey::default()
+            })
+        );
+    }
+
+    #[test]
+    fn plain_escape_cancels() {
+        assert_eq!(
+            hotkey_from_events(&[press(Key::Escape, Modifiers::NONE)]),
+            Some(None)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5194,6 +5426,7 @@ mod clipboard_tests {
             key_form: Default::default(),
             plugin_settings: None,
             app_picker: None,
+            open_monitors: Default::default(),
             image_editor: None,
             video_setup: Default::default(),
             wallpaper_editor: None,

@@ -24,12 +24,9 @@ waits for the owner's confirmation and may change.
 - Plugin secrets (an OBS password) are stored in the system's own secret
   store when there is one; without one Deckly falls back to something of its
   own (the owner left the choice of fallback to the design).
-- All of it is built on the branch `feature/plugin-sdk`, cut from `dev`. Each
-  piece gets its own task branch cut from `feature/plugin-sdk` and is merged
-  back into it. `feature/plugin-sdk` goes into `dev` only when the SDK and the
-  first plugins work, on the owner's word, and from there into `main`. This
-  replaces "branch from `origin/dev`" in AGENTS.md for this work only; the
-  rules for `dev` and `main` are unchanged.
+- All of it was built on the branch `feature/plugin-sdk` and merged when the
+  SDK and the first plugins worked, on the owner's word (released in 0.0.5).
+  New SDK work follows the branch rules in AGENTS.md.
 
 Running existing Stream Deck SDK plugins unchanged stays a goal (AGENTS.md).
 The host keeps that path as it is. Deckly plugins are a second kind of plugin
@@ -41,8 +38,7 @@ Built: `crates/deckly-plugin-protocol`, the pipe transport in
 `crates/deckly-plugin-host` (`src/pipe.rs`), `crates/deckly-sdk`, key faces in
 the app's renderer, `examples/counter-plugin` with an integration test that
 runs the real host, and `examples/transport-bench` for the measurements below.
-These are facts of the code now; the owner may still change them before
-`feature/plugin-sdk` goes into `dev`.
+These are facts of the code now.
 
 Wire format:
 

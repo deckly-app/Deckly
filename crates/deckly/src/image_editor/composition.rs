@@ -72,7 +72,8 @@ pub struct Composition {
     /// Pure black by default, matching built-in keys. A near-black color
     /// leaves a visible background around the glyph on the hardware.
     pub background: [u8; 3],
-    /// Page icons default to transparency; key images retain their black background.
+    /// The editor starts every new picture transparent; `Default` keeps
+    /// the black background for plain compositions.
     pub transparent: bool,
     /// Back to front.
     pub layers: Vec<Layer>,
@@ -416,6 +417,43 @@ mod tests {
             );
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_transparent_icon_looks_like_the_black_one_on_a_key_without_wallpaper() {
+        use crate::render::{Live, Renderer};
+        use deckly_core::KeyConfig;
+
+        let fonts = Fonts::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("deckly-transparent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut renderer = Renderer::new();
+        let mut shown = Vec::new();
+        for transparent in [false, true] {
+            let mut draft = Composition {
+                transparent,
+                ..Default::default()
+            };
+            draft
+                .add(Layer::new(Content::Icon(
+                    "Power",
+                    egui_phosphor::regular::POWER,
+                )))
+                .unwrap();
+            let path = dir.join(format!("{transparent}.png"));
+            draft.render(&fonts).unwrap().save(&path).unwrap();
+            let mut key = KeyConfig::new(crate::actions::OPEN, serde_json::json!({}));
+            key.image = Some(path);
+            shown.push(renderer.render(Some(&key), 72, Live::default(), None));
+        }
+        assert_eq!(shown[1].get_pixel(0, 0).0, [0, 0, 0, 255]);
+        for (black, clear) in shown[0].pixels().zip(shown[1].pixels()) {
+            assert_eq!(clear.0[3], 255);
+            for (a, b) in black.0.iter().zip(clear.0) {
+                assert!(a.abs_diff(b) <= 2, "{black:?} {clear:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

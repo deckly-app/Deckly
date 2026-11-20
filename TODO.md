@@ -51,6 +51,10 @@ Planned features, chosen by the project owner on 2026-11-02.
 
 Chosen by the project owner on 2026-11-14.
 
+- [x] Protect important keys from accidental presses.
+      Done: the shield in the key form, or Protect… in a key's menu: Hold
+      to run, Press twice, or a Confirm screen on the device (Yes, No,
+      Back, optionally shuffled).
 - [ ] Hold layer (Fn): holding one key temporarily shows another set of
       actions on the other keys, with their matching images and titles.
       Releasing it restores the previous set. Release, device disconnect and
@@ -136,6 +140,15 @@ the [design draft](docs/plugin-sdk.md).
       from it.
       Done: `deckly-cli` (also `cargo deckly`) with `create`, `build`, `link`,
       `unlink`, `list`, `dev`, `validate`, `pack` and `log`.
+- [ ] Have `deckly-cli create` generate `AGENTS.md` and `CLAUDE.md` in every
+      plugin template, with consistent instructions linked to the SDK docs.
+      Cover plugin best practices: action lifecycle and settings, error
+      handling, non-blocking work, protocol-safe logging and tests. Design
+      plugins for Windows, Linux and macOS from the start: portable
+      dependencies and paths, no assumptions about shells or system commands,
+      isolated platform APIs with clear unsupported errors, and build/test
+      checks on all three systems. Test that both files are generated for
+      every template and keep their guidance in sync with the SDK.
 - [x] Key faces: the plugin describes a key and Deckly draws it.
 - [x] Deckly plugin packages (`.decklyPlugin` archives) through the install
       path; plain Deckly plugin folders install already.
@@ -189,6 +202,24 @@ Decided by the project owner on 2026-11-11. The steps are in the
 - [ ] Move Deckly into that organization, then change the repository path in
       the updater, the install scripts, the Homebrew formula, the AUR package
       and the Windows installer.
+
+## Branches and releases
+
+Proposed on 2026-11-15, not decided yet: drop `dev` and keep only `main`.
+
+- [ ] CI: run on push to `main` and on pull requests only; remove `dev` from
+      `ci.yml` and `docs.yml`.
+- [ ] Docs: publish the SDK book on a release tag (or by hand), not on every
+      push to `main`, so the site never describes unreleased API. Pushes keep
+      building it as a check.
+- [ ] Separate tags: `v0.0.x` builds the app release, `sdk-v0.0.x` releases
+      `deckly-sdk`, `deckly-plugin-protocol` and `deckly-cli`, so one does
+      not trigger the other.
+- [ ] Rewrite section 6 of `AGENTS.md`, `CONTRIBUTING.md` and
+      `docs/releasing.md`: short task branches merged into `main` (small
+      changes may go straight to `main`); agents still merge only after the
+      owner approves.
+- [ ] Delete `dev` locally and on GitHub, only after the owner confirms.
 
 ## Lower priority
 

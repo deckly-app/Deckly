@@ -86,17 +86,17 @@ Deckly is a clean-room reimplementation: study features and behavior, document f
 
 ### Branches and human approval
 
-- `main` is the stable branch; `dev` is the integration branch, initially created from `main`. If `dev` does not exist, ask the owner for explicit permission to create it from `main` and publish it. Do not silently use `main` as the base for new tasks.
-- Start each new task on a separate branch based on the latest `origin/dev` after fetching. Continue related work on that task branch; keep unrelated work in separate branches.
+- `main` is the only long-lived branch. There is no `dev` branch; do not create one.
+- Start each new task on a separate branch based on the latest `origin/main` after fetching. Continue related work on that task branch; keep unrelated work in separate branches.
 - Name a branch `<kind>/<short-task-name>` after the work it holds: `feature/` for new behavior, `fix/` for a bug fix, `docs/` for documentation, `refactor/` for code that keeps its behavior, `chore/` for everything else (dependencies, CI, tooling). Never put the name of an agent, tool, or model in a branch name.
-- Create the branch with `git switch --no-track -c <kind>/<short-task-name> origin/dev`, so that it does not track `origin/dev` and a plain push cannot reach `dev`.
-- Within the authorized task, agents may edit, test, commit, and push the task branch without asking for confirmation at each step. Push explicitly to the task branch; never include `dev` or `main` in a blanket push.
-- Once the task is complete, report the changes and validation results. The agent may then ask whether to merge that task branch into `dev`. Wait for explicit human approval before merging and publishing the merge to `dev`.
-- Without explicit human approval for the specific operation and target, agents must not change either local or remote `dev` or `main`: no direct commits, merges, cherry-picks, rebases, resets, pushes, force-pushes, deletions, or other branch updates. Fetching and reading these branches, creating a task branch from `origin/dev`, and incorporating `origin/dev` into a task branch are allowed because they do not update the protected branches.
-- Promote `dev` into `main` only when the owner explicitly requests that promotion. Do not start this promotion on an agent's own initiative or infer permission to update `main` from approval to merge into `dev`.
-- Permission to work on or push a task branch does not authorize changes to `dev` or `main`. Approval applies only to the stated operation, target, and agreed changes; it is not blanket approval for later tasks or promotions. An explicit approval already given in the conversation remains valid within that scope; do not ask for it again.
-- Task branches go into `dev` by a merge, after the owner approves it; do not open pull requests for them.
-- The one pull request is from `dev` into `main`, opened when the owner asks to promote `dev`. Its description is the changelog of the release: what changed for users, grouped by feature and fix, in plain words. Do not enable auto-merge or otherwise bypass these approval requirements.
+- Create the branch with `git switch --no-track -c <kind>/<short-task-name> origin/main`, so that it does not track `origin/main` and a plain push cannot reach `main`.
+- Within the authorized task, agents may edit, test, commit, and push the task branch without asking for confirmation at each step. Push explicitly to the task branch; never include `main` in a blanket push.
+- Once the task is complete, report the changes and validation results, including what the owner should look at themselves (a UI change, behavior on a device or system the agent could not run). Then ask whether to merge the task branch into `main`. Green checks are not approval: the owner decides after trying the result.
+- Merge into `main` only after the owner's explicit approval for that branch: update the local `main` from `origin/main`, merge the task branch with `git merge --no-ff`, run the checks again if `main` moved since the task branch was cut, and push `main`. Then delete the task branch locally and on `origin`.
+- Without explicit human approval for the specific operation, agents must not change local or remote `main`: no direct commits, merges, cherry-picks, rebases, resets, pushes, force-pushes, deletions, or other branch updates. Fetching and reading `main`, creating a task branch from `origin/main`, and incorporating `origin/main` into a task branch are allowed because they do not update `main`.
+- Approval applies only to the stated operation, target, and agreed changes; it is not blanket approval for later tasks or releases. An explicit approval already given in the conversation remains valid within that scope; do not ask for it again.
+- Do not open pull requests for task branches, and do not enable auto-merge or otherwise bypass these approval requirements.
+- Task branches do not edit `CHANGELOG.md`; their commit messages say in plain words what changed for users. A release is a tag on `main`, made only when the owner asks (see `docs/releasing.md`): then the agent writes the version's section of `CHANGELOG.md` from what reached `main` since the last tag, and the owner reads and approves it before the tag.
 
 ### Pushing with a token for this repository (optional)
 

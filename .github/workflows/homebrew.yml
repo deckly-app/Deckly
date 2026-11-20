@@ -1,0 +1,69 @@
+# Puts the formula of a published release into deckly-app/homebrew-tap, so
+# `brew upgrade` finds the new version. It runs when the owner publishes a
+# release, not for drafts or pre-releases; run it by hand with a tag to try
+# again after a failure.
+#
+# Needs the repository secret HOMEBREW_TAP_TOKEN: a fine-grained token for
+# deckly-app/homebrew-tap with Contents read and write.
+name: Homebrew
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag, such as v0.0.6
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  tap:
+    name: Update the tap
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Check the tag
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a release tag: $TAG"
+            exit 1
+          fi
+
+      - name: Download the formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern deckly.rb --dir formula
+          if ! grep -qx "  version \"${TAG#v}\"" formula/deckly.rb; then
+            echo "::error::The release's deckly.rb is not for ${TAG#v}"
+            exit 1
+          fi
+
+      - name: Push it to the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::The HOMEBREW_TAP_TOKEN secret is not set"
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/deckly-app/homebrew-tap.git" tap
+          cp formula/deckly.rb tap/Formula/deckly.rb
+          cd tap
+          if git diff --quiet; then
+            echo "The tap already has ${TAG#v}."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "deckly ${TAG#v}"
+          git push origin HEAD

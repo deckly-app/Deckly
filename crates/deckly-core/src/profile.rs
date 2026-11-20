@@ -302,6 +302,132 @@ pub struct KeyConfig {
     /// The state a many-state action inside a Multi Action asks for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desired_state: Option<u8>,
+    /// Protection against accidental presses. `None` runs on a plain press.
+    /// Only keys on a page or in a folder have it, never actions inside a
+    /// key. A value Deckly cannot read loads as `None`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "Protection::lenient"
+    )]
+    pub protect: Option<Protection>,
+}
+
+/// How a protected key asks for a deliberate gesture before its action runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum Protection {
+    /// The action runs once the key was held down for `ms` milliseconds.
+    Hold {
+        #[serde(default = "Protection::default_hold")]
+        ms: u32,
+    },
+    /// A first press arms the key; a second one within `ms` milliseconds
+    /// runs the action.
+    Twice {
+        #[serde(default = "Protection::default_window")]
+        ms: u32,
+    },
+    /// A press opens a confirmation screen on the device: Yes runs the
+    /// action, No and Back close it. It closes by itself after `ms`
+    /// milliseconds. `shuffle` places the answers anew each time.
+    Confirm {
+        #[serde(default = "Protection::default_timeout")]
+        ms: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shuffle: bool,
+    },
+}
+
+impl Protection {
+    pub const HOLD_MIN_MS: u32 = 300;
+    pub const HOLD_MAX_MS: u32 = 5_000;
+    pub const HOLD_DEFAULT_MS: u32 = 1_000;
+    pub const WINDOW_MIN_MS: u32 = 1_000;
+    pub const WINDOW_MAX_MS: u32 = 10_000;
+    pub const WINDOW_DEFAULT_MS: u32 = 3_000;
+    pub const TIMEOUT_MIN_MS: u32 = 3_000;
+    pub const TIMEOUT_MAX_MS: u32 = 30_000;
+    pub const TIMEOUT_DEFAULT_MS: u32 = 10_000;
+
+    fn default_hold() -> u32 {
+        Self::HOLD_DEFAULT_MS
+    }
+
+    fn default_window() -> u32 {
+        Self::WINDOW_DEFAULT_MS
+    }
+
+    fn default_timeout() -> u32 {
+        Self::TIMEOUT_DEFAULT_MS
+    }
+
+    pub fn hold() -> Self {
+        Self::Hold {
+            ms: Self::HOLD_DEFAULT_MS,
+        }
+    }
+
+    pub fn twice() -> Self {
+        Self::Twice {
+            ms: Self::WINDOW_DEFAULT_MS,
+        }
+    }
+
+    pub fn confirm() -> Self {
+        Self::Confirm {
+            ms: Self::TIMEOUT_DEFAULT_MS,
+            shuffle: false,
+        }
+    }
+
+    /// The hold time or the window, in milliseconds.
+    pub fn ms(self) -> u32 {
+        match self {
+            Self::Hold { ms } | Self::Twice { ms } | Self::Confirm { ms, .. } => ms,
+        }
+    }
+
+    /// The bounds of [`Self::ms`] for this mode.
+    pub fn range(self) -> (u32, u32) {
+        match self {
+            Self::Hold { .. } => (Self::HOLD_MIN_MS, Self::HOLD_MAX_MS),
+            Self::Twice { .. } => (Self::WINDOW_MIN_MS, Self::WINDOW_MAX_MS),
+            Self::Confirm { .. } => (Self::TIMEOUT_MIN_MS, Self::TIMEOUT_MAX_MS),
+        }
+    }
+
+    /// This mode with another time, kept within its bounds.
+    pub fn with_ms(self, ms: u32) -> Self {
+        let (min, max) = self.range();
+        let ms = ms.clamp(min, max);
+        match self {
+            Self::Hold { .. } => Self::Hold { ms },
+            Self::Twice { .. } => Self::Twice { ms },
+            Self::Confirm { shuffle, .. } => Self::Confirm { ms, shuffle },
+        }
+    }
+
+    pub fn sanitize(&mut self) {
+        *self = self.with_ms(self.ms());
+    }
+
+    /// Whether a key with `action` can be protected. Key Logic tells its
+    /// own presses apart (single, double, hold), which a gesture in front
+    /// of it would change.
+    pub fn allowed(action: &str) -> bool {
+        action != KEY_LOGIC
+    }
+
+    /// Reads a stored protection; anything unreadable is no protection,
+    /// so one odd value never stops a whole profile from loading.
+    fn lenient<'de, D>(deserializer: D) -> Result<Option<Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+        Ok(value.and_then(|v| serde_json::from_value::<Self>(v).ok()))
+    }
 }
 
 /// Timing of one action inside a Multi Action, in milliseconds.
@@ -498,6 +624,7 @@ impl KeyConfig {
             groups,
             delays: None,
             desired_state: None,
+            protect: None,
         }
     }
 
@@ -527,6 +654,7 @@ impl KeyConfig {
             list.truncate(size);
             for member in list {
                 member.groups.clear();
+                member.protect = None;
                 if let Some(delays) = &mut member.delays {
                     delays.sanitize();
                 }
@@ -841,6 +969,12 @@ fn sanitize_title(key: &mut KeyConfig) {
     if let Some(auto_exit) = &mut key.auto_exit {
         auto_exit.sanitize();
     }
+    if !Protection::allowed(&key.action) {
+        key.protect = None;
+    }
+    if let Some(protect) = &mut key.protect {
+        protect.sanitize();
+    }
     if key.title.chars().count() > MAX_TITLE_CHARS {
         key.title = key.title.chars().take(MAX_TITLE_CHARS).collect();
     }
@@ -945,6 +1079,130 @@ impl std::error::Error for ProfileError {}
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn protection_round_trips_and_old_keys_load_unprotected() {
+        let legacy: KeyConfig = serde_json::from_value(json!({
+            "action": "com.example.action", "settings": {}
+        }))
+        .unwrap();
+        assert_eq!(legacy.protect, None);
+        // An unprotected key writes nothing new.
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("protect")
+                .is_none()
+        );
+        let mut profile = Profile::new("Safe", DeviceKind::Mk2);
+        for (index, protect) in [
+            None,
+            Some(Protection::hold()),
+            Some(Protection::Hold { ms: 2_500 }),
+            Some(Protection::twice()),
+            Some(Protection::confirm()),
+            Some(Protection::Confirm {
+                ms: 4_000,
+                shuffle: true,
+            }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut key = legacy.clone();
+            key.protect = protect;
+            profile.pages[0].keys.insert(index as u8, key);
+        }
+        let json = profile.to_json().unwrap();
+        assert!(json.contains(r#""mode": "hold""#));
+        assert!(json.contains(r#""mode": "twice""#));
+        assert!(json.contains(r#""mode": "confirm""#));
+        // Shuffle off is the default and is not written.
+        assert_eq!(json.matches(r#""shuffle""#).count(), 1);
+        assert_eq!(Profile::from_json(&json).unwrap(), profile);
+    }
+
+    #[test]
+    fn stored_protection_is_clamped_and_never_breaks_a_profile() {
+        let protect = |value: serde_json::Value| {
+            let text = json!({
+                "id": "p", "name": "P", "device": "mk2",
+                "pages": [{"id": "a", "keys": {"0": {
+                    "action": "com.example.action", "protect": value
+                }}}]
+            })
+            .to_string();
+            Profile::from_json(&text).unwrap().pages[0].keys[&0].protect
+        };
+        assert_eq!(
+            protect(json!({"mode": "hold", "ms": 10})),
+            Some(Protection::Hold {
+                ms: Protection::HOLD_MIN_MS
+            })
+        );
+        assert_eq!(
+            protect(json!({"mode": "hold", "ms": 999_999_999})),
+            Some(Protection::Hold {
+                ms: Protection::HOLD_MAX_MS
+            })
+        );
+        assert_eq!(
+            protect(json!({"mode": "twice", "ms": 0})),
+            Some(Protection::Twice {
+                ms: Protection::WINDOW_MIN_MS
+            })
+        );
+        assert_eq!(protect(json!({"mode": "hold"})), Some(Protection::hold()));
+        assert_eq!(protect(json!({"mode": "twice"})), Some(Protection::twice()));
+        assert_eq!(
+            protect(json!({"mode": "confirm"})),
+            Some(Protection::confirm())
+        );
+        assert_eq!(
+            protect(json!({"mode": "confirm", "ms": 1, "shuffle": true})),
+            Some(Protection::Confirm {
+                ms: Protection::TIMEOUT_MIN_MS,
+                shuffle: true
+            })
+        );
+        assert_eq!(protect(json!({"mode": "confirm", "shuffle": "yes"})), None);
+        // Unknown or malformed values load as no protection.
+        assert_eq!(protect(json!({"mode": "triple"})), None);
+        assert_eq!(protect(json!({"mode": "hold", "ms": -5})), None);
+        assert_eq!(protect(json!("hold")), None);
+        assert_eq!(protect(json!(null)), None);
+    }
+
+    #[test]
+    fn only_keys_that_allow_it_keep_protection() {
+        let mut profile = Profile::new("Safe", DeviceKind::Mk2);
+        let mut logic = KeyConfig::new(KEY_LOGIC, json!({}));
+        logic.protect = Some(Protection::hold());
+        let mut multi = KeyConfig::new(MULTI_ACTION, json!({}));
+        multi.protect = Some(Protection::twice());
+        let mut member = KeyConfig::new("com.example.action", json!({}));
+        member.protect = Some(Protection::hold());
+        multi.groups[0].push(member);
+        profile.pages[0].keys.insert(0, logic);
+        profile.pages[0].keys.insert(1, multi);
+        profile.sanitize();
+        let keys = &profile.pages[0].keys;
+        assert_eq!(keys[&0].protect, None);
+        assert_eq!(keys[&1].protect, Some(Protection::twice()));
+        assert_eq!(keys[&1].groups[0][0].protect, None);
+    }
+
+    #[test]
+    fn protection_times_stay_in_their_mode_bounds() {
+        assert_eq!(Protection::hold().with_ms(0).ms(), Protection::HOLD_MIN_MS);
+        assert_eq!(
+            Protection::twice().with_ms(u32::MAX).ms(),
+            Protection::WINDOW_MAX_MS
+        );
+        assert_eq!(Protection::hold().with_ms(1_500).ms(), 1_500);
+        assert!(Protection::allowed(MULTI_ACTION));
+        assert!(!Protection::allowed(KEY_LOGIC));
+    }
 
     #[test]
     fn auto_exit_defaults_to_inheritance_and_preserves_explicit_settings() {

@@ -15,7 +15,7 @@ plugin folder. The SDK writes it: run the plugin program with
   "icon": "assets/plugin.svg",
   "category": "",
   "protocol": 1,
-  "sdk": "0.0.1",
+  "sdk": "0.0.2",
   "services": [],
   "programs": {
     "x86_64-unknown-linux-gnu": "hello-deckly"

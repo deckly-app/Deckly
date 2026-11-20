@@ -48,7 +48,7 @@ field is a protocol error, and Deckly restarts the plugin.
 ```json
 {"type": "hello", "protocol": 1, "app_version": "0.0.4", "platform": "linux",
  "session": "wayland", "language": "en", "devices": [], "services": []}
-{"type": "ready", "protocol": 1, "sdk": "0.0.1"}
+{"type": "ready", "protocol": 1, "sdk": "0.0.2"}
 ```
 
 `ready.protocol` must be between Deckly's oldest and newest supported
