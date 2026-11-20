@@ -16,6 +16,7 @@ The product name is written `Deckly` in user-facing text; crates, binaries, and 
 - Use egui for UI, eframe for the native shell, and wgpu as the renderer. Use the framework renderer; avoid custom low-level wgpu code unless a measured requirement calls for it.
 - Prefer pure-Rust dependencies and keep the tree small. Use OS libraries or FFI only for device access or desktop integration (HID, input injection, tray, autostart); isolate that code in small platform modules and explain why it is needed.
 - Windows, Linux, and macOS are first-class. Keep shared logic portable. Do not silently make a feature Windows-only; a platform that lacks a feature returns a clear "unsupported" error.
+- On Linux, X11 and Wayland are both first-class. Design every feature that touches windows, input, the tray, the clipboard, global hotkeys, or the screen for both from the start, without waiting to be asked; never treat a feature that works only on X11 as done for Linux. Where the two need different code (Wayland lets a client neither move its own window nor read global input), use the API that works on each, such as a compositor or portal request on Wayland. When a feature cannot work on one of them, say so in the UI and in the task report, and do not hide the difference.
 - Keep the MIT license. Do not change it without the project owner's approval. Keep third-party notices intact.
 - Use SVG icons or one consistent Rust icon library (egui-phosphor). Never use Unicode characters or emoji as substitute UI icons.
 
