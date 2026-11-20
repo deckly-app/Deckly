@@ -48,6 +48,14 @@ pub fn files(a: &Answers, year: i32) -> Vec<File> {
             text: render(include_str!("../templates/common/README.md")),
         },
         File {
+            path: "AGENTS.md",
+            text: render(include_str!("../templates/common/AGENTS.md")),
+        },
+        File {
+            path: "CLAUDE.md",
+            text: include_str!("../templates/common/CLAUDE.md").to_owned(),
+        },
+        File {
             path: "assets/plugin.svg",
             text: include_str!("../templates/common/plugin.svg").to_owned(),
         },
@@ -98,10 +106,16 @@ pub fn files(a: &Answers, year: i32) -> Vec<File> {
         License::None => {}
     }
     if a.ci {
-        files.push(File {
-            path: ".github/workflows/release.yml",
-            text: render(include_str!("../templates/common/release.yml")),
-        });
+        files.extend([
+            File {
+                path: ".github/workflows/check.yml",
+                text: include_str!("../templates/common/check.yml").to_owned(),
+            },
+            File {
+                path: ".github/workflows/release.yml",
+                text: render(include_str!("../templates/common/release.yml")),
+            },
+        ]);
     }
     files
 }
@@ -278,6 +292,29 @@ mod tests {
         assert!(cargo.contains(r#"{ git = "https://example.com/deckly", branch = "dev" }"#));
         assert!(!cargo.contains("license ="));
         assert!(cargo.contains("\n[workspace]\n"));
+    }
+
+    #[test]
+    fn every_project_gets_agent_instructions() {
+        for example in Example::ALL {
+            for ci in [true, false] {
+                let mut a = answers();
+                a.example = example;
+                a.ci = ci;
+                let files = files(&a, 2026);
+                let get = |p: &str| files.iter().find(|f| f.path == p).map(|f| &f.text);
+                let agents = get("AGENTS.md").expect("AGENTS.md");
+                // One set of instructions: CLAUDE.md only imports AGENTS.md.
+                assert_eq!(get("CLAUDE.md").map(String::as_str), Some("@AGENTS.md\n"));
+                assert!(agents.contains("Plugin id: `com.ada.clock`"));
+                assert!(agents.starts_with("# Ada's \"Clock\" — agent instructions"));
+                for system in ["Windows", "macOS", "X11", "Wayland"] {
+                    assert!(agents.contains(system), "{system}");
+                }
+                let paths: Vec<&str> = files.iter().map(|f| f.path).collect();
+                assert_eq!(paths.contains(&".github/workflows/check.yml"), ci);
+            }
+        }
     }
 
     /// Cargo treats a folder holding a file named `Cargo.toml` as another

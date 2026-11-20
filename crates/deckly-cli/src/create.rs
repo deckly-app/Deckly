@@ -1,7 +1,7 @@
 //! `create` (alias `new`): a few questions, then a ready project in a new
 //! folder: the plugin with an example action and its tests, icons, a
-//! README, a licence, a release workflow and a git repository; built and
-//! linked into Deckly.
+//! README, agent instructions, a licence, check and release workflows and a
+//! git repository; built and linked into Deckly.
 //!
 //! Every question is also a flag. With `--yes` the questions without a flag
 //! take their defaults; without a terminal the tool never waits on a prompt:

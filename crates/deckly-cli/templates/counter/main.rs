@@ -90,7 +90,10 @@ mod tests {
         deck.press("key-1");
         let saved = deck.settings("key-1", WAIT).unwrap();
         assert_eq!(saved["count"], 5);
-        assert_eq!(deck.face("key-1", WAIT).unwrap().value.as_deref(), Some("5"));
+        assert_eq!(
+            deck.face("key-1", WAIT).unwrap().value.as_deref(),
+            Some("5")
+        );
 
         deck.button("key-1", "reset");
         assert_eq!(deck.settings("key-1", WAIT).unwrap()["count"], 0);

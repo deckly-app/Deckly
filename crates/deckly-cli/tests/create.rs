@@ -88,6 +88,9 @@ fn create_yes_makes_a_project_that_tests_builds_validates_and_packs() {
         "README.md",
         "LICENSE",
         ".gitignore",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".github/workflows/check.yml",
         ".github/workflows/release.yml",
     ] {
         assert!(project.join(file).is_file(), "{file} is missing");
@@ -112,6 +115,19 @@ fn create_yes_makes_a_project_that_tests_builds_validates_and_packs() {
     assert!(
         text.contains("counts_presses_and_saves_the_count ... ok"),
         "{text}"
+    );
+    // What check.yml and AGENTS.md ask for passes on a new project.
+    run(
+        Command::new(&cargo)
+            .args(["fmt", "--all", "--check"])
+            .current_dir(&project),
+        &config,
+    );
+    run(
+        Command::new(&cargo)
+            .args(["clippy", "--all-targets", "--", "-D", "warnings"])
+            .current_dir(&project),
+        &config,
     );
 
     run(&mut cli(&project.join("src"), &["build"]), &config);
@@ -167,6 +183,8 @@ fn the_minimal_example_passes_its_own_test() {
     let project = root.join("tiny");
     assert!(project.join("LICENSE-MIT").is_file());
     assert!(project.join("LICENSE-APACHE").is_file());
+    assert!(project.join("AGENTS.md").is_file());
+    assert!(project.join("CLAUDE.md").is_file());
     assert!(!project.join(".github").exists());
     // --no-link: nothing was written into Deckly's folder.
     assert!(!config.exists());

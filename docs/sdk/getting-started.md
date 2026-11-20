@@ -62,8 +62,11 @@ hello/
 ├── src/main.rs         the plugin: the example action and its tests
 ├── assets/             the plugin's icon and the action's icon (SVG)
 ├── README.md           how to develop, test, pack and release it
+├── AGENTS.md           instructions for AI coding agents; CLAUDE.md points here
 ├── LICENSE
-└── .github/workflows/release.yml   packs it for every system on a tag
+└── .github/workflows/
+    ├── check.yml       lints and tests on Linux, Windows and macOS on every push
+    └── release.yml     packs it for every system on a tag
 ```
 
 Every question is also a flag, and `--yes` takes the defaults without
