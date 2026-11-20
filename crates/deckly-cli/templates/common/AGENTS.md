@@ -77,6 +77,8 @@ Wayland from the first version, without waiting to be asked.
 - No `unwrap`, `expect`, `panic!` or unchecked indexing on data from the
   network, files, other programs, settings or the user. Return errors,
   log them and show `key.show_alert()`; the plugin keeps running.
+  Tests (`#[cfg(test)]`) are the exception: there `unwrap` is fine, since a
+  failed test should stop with a clear message.
 - Standard output carries the protocol to Deckly. Never print to it
   with `println!` or `print!` (the `print_stdout` lint in `Cargo.toml`
   refuses it; keep that lint), and do not let a dependency print there.
