@@ -2,16 +2,10 @@
 
 All notable changes to Deckly. Newest first.
 
-## Unreleased
+## 0.0.6 — Keys that ask first
 
-### Open action
-
-- **Choose where the app opens.** The Open action has new **Monitor**,
-  **Window** and **Layout** settings. On Hyprland: any monitor, maximized
-  or fullscreen, floating or tiled; this also works for apps started by a
-  launcher that exits, such as Spotify. On Windows: any monitor, normal,
-  maximized or minimized. An app that is already running keeps its window
-  where it is. Other desktops do not support it yet and say so.
+Important keys can now ask for a deliberate gesture before they run, and
+the Open action chooses the monitor and window state of the app it starts.
 
 ### Keys
 
@@ -31,8 +25,45 @@ All notable changes to Deckly. Newest first.
   - Works for every kind of key: built-in actions, Multi Actions, folders
     and plugin actions. A plugin hears its key only once the gesture is
     complete. Editing the page, changing page, folder or profile, locking
-    the computer or unplugging the device cancels a gesture. Protected keys show a shield
-    in the editor.
+    the computer or unplugging the device cancels a gesture. Protected keys
+    show a shield in the editor.
+- **Hotkeys record the whole combination.** Recording a Hotkey stopped at
+  the first modifier pressed (Ctrl, Shift, Alt or Super); it now waits for
+  the main key and keeps every modifier held with it.
+
+### Open action
+
+- **Choose where the app opens.** The Open action has new **Monitor**,
+  **Window** and **Layout** settings. On Hyprland: any monitor, maximized
+  or fullscreen, floating or tiled; this also works for apps started by a
+  launcher that exits, such as Spotify. On Windows: any monitor, normal,
+  maximized or minimized. An app that is already running keeps its window
+  where it is. Other desktops do not support it yet and say so.
+
+### Images
+
+- **Transparent pictures.** New key pictures start transparent, as page
+  icons already did: on a device without a wallpaper they look the same as
+  black, and a wallpaper shows through. Unticking **Transparent** is kept
+  for that picture.
+- **Icons found by meaning.** The Icon Library also finds icons by what
+  they mean ("shut down", "power off", "reboot", "mute", ...), and with an
+  empty search it suggests icons from the key's title, settings and action.
+
+### For plugin authors
+
+- **deckly-sdk and deckly-cli 0.0.2.** `pack` keeps programs' file modes on
+  Windows, and a shared-state update in a key handler redraws the keys
+  before the next event. New projects use `deckly-sdk` 0.0.2.
+
+### For contributors
+
+- **`cargo dev install`** builds this checkout and installs it where a
+  release goes, replacing that install; such a build says so in
+  Preferences and never updates itself to a release.
+- **Simpler branches.** There is no `dev` branch any more: task branches go
+  into `main` after the owner's approval, the changelog is written when
+  releasing, and publishing a release updates the Homebrew tap by itself.
 
 ## 0.0.5 — Plugins in Rust
 
