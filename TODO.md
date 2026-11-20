@@ -134,7 +134,7 @@ the [design draft](docs/plugin-sdk.md).
       start a listener), `--describe` and a test harness.
 - [x] SDK docs for plugin authors: the book in `docs/sdk` (getting started,
       guides, reference), the API reference and `llms.txt`, published on
-      GitHub Pages from `main` (`cargo dev book`). Examples in it are tested.
+      GitHub Pages on a release tag (`cargo dev book`). Examples in it are tested.
 - [x] A `deckly` CLI with an interactive `create` that writes a ready plugin
       crate, then `dev`, `validate` and `pack`; Getting started then starts
       from it.
@@ -168,8 +168,8 @@ the [design draft](docs/plugin-sdk.md).
       it hears of them when the key appears again.
 - [ ] Host services: a plugin asks Deckly for hotkeys, text, the active window
       and similar, so one plugin works on X11, Wayland, Windows and macOS.
-- [ ] `deckly-cli`: `new`, `dev` (restart on changes, live log), `validate`,
-      `pack`, `publish`.
+- [ ] `deckly-cli publish`, once the marketplace registry exists. `create`,
+      `dev`, `validate` and `pack` are done.
 - [ ] First plugins: Timer, System stats, OBS.
 
 ## Marketplace
@@ -197,29 +197,28 @@ Decided by the project owner on 2026-11-11. The steps are in the
 [design draft](docs/plugin-sdk.md).
 
 - [x] Where `deckly-sdk` lives: in this repository, next to the plugin host.
-- [ ] Create the GitHub organization `deckly-app` (the name `deckly` is taken)
-      and publish Deckly's own plugins there, one repository per plugin.
-- [ ] Move Deckly into that organization, then change the repository path in
+- [x] Create the GitHub organization `deckly-app` (the name `deckly` is taken).
+- [ ] Publish Deckly's own plugins there, one repository per plugin.
+- [x] Move Deckly into that organization, then change the repository path in
       the updater, the install scripts, the Homebrew formula, the AUR package
       and the Windows installer.
 
 ## Branches and releases
 
-Proposed on 2026-11-15, not decided yet: drop `dev` and keep only `main`.
+Decided on 2026-11-15: drop `dev` and keep only `main`.
 
-- [ ] CI: run on push to `main` and on pull requests only; remove `dev` from
+- [x] CI: run on push to `main` and on pull requests only; remove `dev` from
       `ci.yml` and `docs.yml`.
-- [ ] Docs: publish the SDK book on a release tag (or by hand), not on every
+- [x] Docs: publish the SDK book on a release tag (or by hand), not on every
       push to `main`, so the site never describes unreleased API. Pushes keep
       building it as a check.
 - [ ] Separate tags: `v0.0.x` builds the app release, `sdk-v0.0.x` releases
       `deckly-sdk`, `deckly-plugin-protocol` and `deckly-cli`, so one does
-      not trigger the other.
-- [ ] Rewrite section 6 of `AGENTS.md`, `CONTRIBUTING.md` and
-      `docs/releasing.md`: short task branches merged into `main` (small
-      changes may go straight to `main`); agents still merge only after the
-      owner approves.
-- [ ] Delete `dev` locally and on GitHub, only after the owner confirms.
+      not trigger the other. Not decided yet.
+- [x] Rewrite section 6 of `AGENTS.md`, `CONTRIBUTING.md` and
+      `docs/releasing.md`: task branches merged into `main`; agents merge
+      only after the owner approves.
+- [x] Delete `dev` locally and on GitHub.
 
 ## Lower priority
 
