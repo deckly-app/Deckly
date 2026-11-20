@@ -38,8 +38,15 @@ Makes one `.decklyPlugin` file in `target/deckly` for this system. Install
 it in Deckly with **Add File…** in the Plugins tab, or drop it on the
 window.
 
+## Writing it with an AI agent
+
+`AGENTS.md` tells coding agents how to write this plugin: for Windows,
+macOS and Linux (X11 and Wayland) from the start, with the SDK's rules and
+the checks to run. `CLAUDE.md` points to it. Edit it to add your own rules.
+
 ## Release
 
-Push a tag such as `v0.0.1`. The workflow in `.github/workflows/release.yml`
+`.github/workflows/check.yml` lints and tests the plugin on Linux, Windows
+and macOS on every push. Push a tag such as `v0.0.1`. The workflow in `.github/workflows/release.yml`
 packs the plugin on Linux, Windows and macOS, joins the files into one with
 `deckly-cli pack --merge`, and attaches it to a GitHub release.

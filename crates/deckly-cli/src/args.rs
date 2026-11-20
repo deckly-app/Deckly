@@ -44,7 +44,7 @@ default. Without a terminal, missing answers are an error, never a prompt.
   --dir <folder>          Where to make the project folder (default: here)
   -y, --yes               Take the defaults; do not ask
   --no-git                Do not make a git repository
-  --no-ci                 Leave out the release workflow
+  --no-ci                 Leave out the check and release workflows
   --no-build              Do not build the plugin
   --no-link               Do not link it into Deckly
   --sdk-path <folder>     Use deckly-sdk from a local folder (also DECKLY_SDK_PATH)

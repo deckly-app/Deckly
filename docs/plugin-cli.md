@@ -193,13 +193,30 @@ what was skipped.
 ├── .gitignore                  /target
 ├── LICENSE
 ├── README.md                   dev, test, pack, release, in five short lines each
-└── .github/workflows/release.yml
+├── AGENTS.md                   instructions for AI coding agents (below)
+├── CLAUDE.md                   `@AGENTS.md`, so Claude Code reads the same file
+└── .github/workflows/
+    ├── check.yml               fmt, clippy and tests on Linux, Windows and macOS
+    └── release.yml
 ```
 
-The CI workflow builds and packs on Linux, Windows and macOS (matrix), joins
+The release workflow builds and packs on Linux, Windows and macOS (matrix), joins
 the files with `pack --merge`, and attaches one `.decklyPlugin` to the GitHub
 release when a `v*` tag is pushed. It is what `plugin-sdk.md` already promises
-for "Plugin repositories".
+for "Plugin repositories". The check workflow runs `cargo fmt --check`,
+`cargo clippy -D warnings` and `cargo test` on the same three systems on
+every push, so a change that breaks one system shows before a release.
+
+`AGENTS.md` is for people who write the plugin with an AI coding agent. It
+tells the agent to write every feature for Windows, macOS, Linux X11 and
+Linux Wayland from the start (portable crates and paths, no shell commands,
+per-system code behind one function, a clear "unsupported" only where the
+system lacks the feature), and repeats the SDK rules that matter most: one
+event thread, settings for state, no output on standard output, no panics
+on outside data, harness tests, and a per-system report. It links the book
+and `llms.txt` instead of copying the API. `CLAUDE.md` holds only
+`@AGENTS.md`, so both kinds of agent read one text. `tests/agents.rs` checks
+that the book pages and SDK calls it names still exist.
 
 The templates are text files inside the `deckly-cli` crate, written by us,
 under the project's MIT licence. The generated `Cargo.toml` names the SDK

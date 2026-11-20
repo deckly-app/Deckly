@@ -39,7 +39,7 @@ inside it. In a Cargo workspace with several plugins, pick one with
 | `--license mit\|apache-2.0\|mit-or-apache-2.0\|none` | The licence. |
 | `--dir <folder>` | Where to make the project folder; default the current folder. |
 | `-y`, `--yes` | Take the defaults for every question without a flag. |
-| `--no-git`, `--no-ci`, `--no-build`, `--no-link` | Skip the git repository, the release workflow, the build, or the link. |
+| `--no-git`, `--no-ci`, `--no-build`, `--no-link` | Skip the git repository, the check and release workflows, the build, or the link. |
 | `--sdk-path <folder>` | Use `deckly-sdk` from a local folder (also `DECKLY_SDK_PATH`): the SDK crate or a Deckly checkout. |
 | `--sdk-git <url>`, `--sdk-branch <branch>` | Use `deckly-sdk` from a git repository (also `DECKLY_SDK_GIT`). |
 
