@@ -276,7 +276,7 @@ fn shell_open(target: &str, parameters: &str) -> bool {
 }
 
 /// Puts a word back into a Windows command line.
-fn quoted(word: &str) -> String {
+pub(super) fn quoted(word: &str) -> String {
     if word.is_empty() || word.contains(char::is_whitespace) {
         format!("\"{word}\"")
     } else {

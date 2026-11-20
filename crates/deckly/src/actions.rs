@@ -435,7 +435,11 @@ pub fn run(key: &KeyConfig) -> Result<Outcome, String> {
             }
             os::send_hotkey(&hotkey).map(|_| Outcome::Done)
         }
-        OPEN => os::open(str_setting(s, "path")).map(|_| Outcome::Done),
+        OPEN => os::placement::open(
+            str_setting(s, "path"),
+            &os::placement::Placement::from_settings(s),
+        )
+        .map(|_| Outcome::Done),
         WEBSITE => {
             let url = str_setting(s, "url").trim();
             if !(url.starts_with("http://") || url.starts_with("https://")) || url.len() < 10 {

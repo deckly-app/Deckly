@@ -21,6 +21,7 @@ mod launch;
 mod lock_gate;
 mod logo;
 mod official;
+mod open_window;
 mod os;
 mod plugins;
 mod prefs;
