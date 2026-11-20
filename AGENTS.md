@@ -96,7 +96,7 @@ Deckly is a clean-room reimplementation: study features and behavior, document f
 - Without explicit human approval for the specific operation, agents must not change local or remote `main`: no direct commits, merges, cherry-picks, rebases, resets, pushes, force-pushes, deletions, or other branch updates. Fetching and reading `main`, creating a task branch from `origin/main`, and incorporating `origin/main` into a task branch are allowed because they do not update `main`.
 - Approval applies only to the stated operation, target, and agreed changes; it is not blanket approval for later tasks or releases. An explicit approval already given in the conversation remains valid within that scope; do not ask for it again.
 - Do not open pull requests for task branches, and do not enable auto-merge or otherwise bypass these approval requirements.
-- Each task that changes what users get adds a line to the `Unreleased` section of `CHANGELOG.md` in plain words, in the same branch. A release is a tag on `main`, made only when the owner asks (see `docs/releasing.md`); its notes come from that section.
+- Task branches do not edit `CHANGELOG.md`; their commit messages say in plain words what changed for users. A release is a tag on `main`, made only when the owner asks (see `docs/releasing.md`): then the agent writes the version's section of `CHANGELOG.md` from what reached `main` since the last tag, and the owner reads and approves it before the tag.
 
 ### Pushing with a token for this repository (optional)
 
