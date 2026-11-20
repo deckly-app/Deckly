@@ -44,8 +44,6 @@ Planned features, chosen by the project owner on 2026-11-02.
 - [ ] Timer
 - [ ] Play Audio
 - [ ] Soundboard
-- [ ] Hotkey with up to four combinations in a row. Deckly presses one, and
-      imported keys lose the rest.
 
 ## Input and editing
 
@@ -234,6 +232,10 @@ Decided on 2026-11-15: drop `dev` and keep only `main`.
 
 - Local API and command-line control (`deckly press`, `deckly profile`), plus an
   MCP server.
+- Several key combinations in a row on one Hotkey key (Ctrl+A, then Ctrl+C).
+  The official profile stores four hotkey slots, but what they are for is
+  unknown and its app shows one combination per key. Multi Action already
+  does this (Hotkey, Delay, Hotkey), so think about it before building it.
 
 ## Not planned for now
 
