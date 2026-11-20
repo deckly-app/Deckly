@@ -46,8 +46,9 @@ DECKLY_ARCHIVE=dist/deckly-x86_64-unknown-linux-gnu.tar.gz DECKLY_PREFIX=/tmp/de
 ## Steps
 
 1. Set the new version in `[workspace.package]` in `Cargo.toml` and run
-   `cargo check` so `Cargo.lock` follows. Merge to `dev`, then `dev` to
-   `main` (both need the owner's approval).
+   `cargo check` so `Cargo.lock` follows, and rename the `Unreleased`
+   section of `CHANGELOG.md` to the version. Commit this on a task branch
+   and merge it into `main` with the owner's approval.
 2. Tag `main` and push the tag: `git tag v0.0.1 origin/main` and
    `git push origin v0.0.1`.
 3. Wait for the Release workflow. It first runs the CI checks (formatting,
@@ -58,7 +59,8 @@ DECKLY_ARCHIVE=dist/deckly-x86_64-unknown-linux-gnu.tar.gz DECKLY_PREFIX=/tmp/de
    again.
 4. Download the archives for the systems at hand and check that Deckly
    starts and drives a device. Record what was tested in `docs/devices.md`.
-5. Publish the draft on GitHub as a normal release, not a pre-release: the
+5. Publish the draft on GitHub as a normal release, with the version's
+   `CHANGELOG.md` section as its notes, not a pre-release: the
    install scripts and Deckly's update check follow GitHub's latest
    release, which skips pre-releases. Running copies offer the update within
    a day.

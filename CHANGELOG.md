@@ -4,6 +4,15 @@ All notable changes to Deckly. Newest first.
 
 ## Unreleased
 
+### Open action
+
+- **Choose where the app opens.** The Open action has new **Monitor**,
+  **Window** and **Layout** settings. On Hyprland: any monitor, maximized
+  or fullscreen, floating or tiled; this also works for apps started by a
+  launcher that exits, such as Spotify. On Windows: any monitor, normal,
+  maximized or minimized. An app that is already running keeps its window
+  where it is. Other desktops do not support it yet and say so.
+
 ### Keys
 
 - **Protect a key from accidental presses.** The shield at the top right of
