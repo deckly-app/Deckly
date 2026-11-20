@@ -12,11 +12,11 @@ use std::sync::OnceLock;
 
 /// The program's name in plain ASCII, six lines of 35 columns.
 const BANNER: [&str; 6] = [
-    r"     _              _     _",
-    r"  __| |  ___   ___ | | __| | _   _",
-    r" / _` | / _ \ / __|| |/ /| || | | |",
-    r"| (_| ||  __/| (__ |   < | || |_| |",
-    r" \__,_| \___| \___||_|\_\|_| \__, |",
+    r" ____               _     _",
+    r"|  _ \   ___   ___ | | __| | _   _",
+    r"| | | | / _ \ / __|| |/ /| || | | |",
+    r"| |_| ||  __/| (__ |   < | || |_| |",
+    r"|____/  \___| \___||_|\_\|_| \__, |",
     r"                             |___/",
 ];
 
@@ -167,6 +167,15 @@ mod tests {
             BANNER.iter().map(|l| l.chars().count()).max(),
             Some(BANNER_WIDTH)
         );
+    }
+
+    #[test]
+    fn the_banner_starts_with_a_capital_d() {
+        // The capital D's left stem starts each letter row; the lowercase d
+        // it replaced started most of them with a space.
+        for line in &BANNER[1..=4] {
+            assert!(line.starts_with('|'), "{line}");
+        }
     }
 
     #[test]
