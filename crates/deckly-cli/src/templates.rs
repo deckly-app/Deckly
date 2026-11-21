@@ -294,6 +294,26 @@ mod tests {
         assert!(cargo.contains("\n[workspace]\n"));
     }
 
+    /// A Windows checkout must not turn the embedded templates into CRLF:
+    /// `.gitattributes` keeps `crates/deckly-cli/templates/**` LF.
+    #[test]
+    fn templates_have_lf_line_endings() {
+        for example in Example::ALL {
+            for ci in [true, false] {
+                let mut a = answers();
+                a.example = example;
+                a.ci = ci;
+                for file in files(&a, 2026) {
+                    assert!(
+                        !file.text.contains('\r'),
+                        "{} has CRLF line endings; check .gitattributes",
+                        file.path
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_project_gets_agent_instructions() {
         for example in Example::ALL {

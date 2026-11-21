@@ -6,3 +6,6 @@ packaging/** text eol=lf
 *.sh text eol=lf
 # Installed on Linux as is, and read by the install tests on every system.
 assets/linux/** text eol=lf
+# Embedded into deckly-cli and written out as new plugin projects; the tests
+# compare their exact text, so they stay LF on Windows checkouts too.
+crates/deckly-cli/templates/** text eol=lf
