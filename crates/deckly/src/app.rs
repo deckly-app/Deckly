@@ -214,10 +214,13 @@ enum DragPayload {
     Member(usize),
 }
 
+/// The side of the key image in the drag preview, in points.
+const DRAG_ICON: f32 = 36.0;
+
 /// What the drag preview under the pointer shows, taken when a drag starts.
 enum DragLook {
-    /// A key's own image, drawn at the size of a key on the canvas.
-    Key { image: TextureHandle, side: f32 },
+    /// A key's icon, without its title or wallpaper.
+    Key(TextureHandle),
     /// A Multi Action step: its plugin image, or its glyph.
     Member {
         image: Option<egui::TextureId>,
@@ -646,13 +649,14 @@ impl App {
         let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-preview"));
         let p = ctx.layer_painter(layer);
         let look = match (&*payload, &self.drag_look) {
-            (DragPayload::Key { .. }, Some(DragLook::Key { image, side })) => {
-                let r = Rect::from_center_size(pos, Vec2::splat(*side));
+            (DragPayload::Key { .. }, Some(DragLook::Key(image))) => {
+                let r = Rect::from_center_size(pos + vec2(20.0, 20.0), Vec2::splat(40.0));
+                p.rect_filled(r, CornerRadius::same(8), KEY_BORDER);
                 p.add(
                     egui::epaint::RectShape::filled(
-                        r,
-                        CornerRadius::same(8),
-                        Color32::from_white_alpha(220),
+                        r.shrink(2.0),
+                        CornerRadius::same(6),
+                        Color32::WHITE,
                     )
                     .with_texture(
                         image.id(),
@@ -1453,23 +1457,21 @@ impl App {
                     index,
                 });
                 if response.drag_started() {
-                    let px = tex_px.clamp(32, 288);
-                    let img = self.renderer.render_on(
-                        Some(key),
-                        px,
-                        live,
-                        overlays.get(&index),
-                        backdrop,
-                    );
+                    // Only the key's icon: no title, no piece of the wallpaper.
+                    let icon_only = KeyConfig {
+                        title: String::new(),
+                        ..key.clone()
+                    };
+                    let px = (DRAG_ICON * ppp).round().clamp(32.0, 288.0) as u32;
+                    let img = self
+                        .renderer
+                        .render_on(Some(&icon_only), px, live, None, None);
                     let size = [px as usize, px as usize];
                     let color = ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     let image = ui
                         .ctx()
                         .load_texture("drag-key", color, TextureOptions::LINEAR);
-                    self.drag_look = Some(DragLook::Key {
-                        image,
-                        side: key_size - 2.0 * border,
-                    });
+                    self.drag_look = Some(DragLook::Key(image));
                 }
             }
             let hovered_drop = response.dnd_hover_payload::<DragPayload>().is_some();
@@ -5569,7 +5571,7 @@ mod auto_exit_tests {
         let ctx = egui::Context::default();
         let color = ColorImage::new([4, 4], vec![Color32::WHITE; 16]);
         let image = ctx.load_texture("drag-key", color, TextureOptions::LINEAR);
-        app.drag_look = Some(DragLook::Key { image, side: 64.0 });
+        app.drag_look = Some(DragLook::Key(image));
         egui::DragAndDrop::set_payload(
             &ctx,
             DragPayload::Key {
