@@ -208,7 +208,8 @@ struct GroupEdit {
 enum DragPayload {
     /// A built-in or plugin action, by UUID.
     Action(String),
-    Key(u8),
+    /// A key, by the id of the page or folder it is on and its place there.
+    Key { page: String, index: u8 },
     /// An action in the open Multi Action, by position.
     Member(usize),
 }
@@ -225,6 +226,41 @@ enum KeyCommand {
 enum PinCommand {
     Pin(u8, String),
     Unpin(u8, String),
+}
+
+/// How long a drag rests on a page chip before that page opens.
+const PAGE_SPRING: Duration = Duration::from_millis(500);
+
+/// Moves the key at `from` on the page `from_page` to `to` on the page
+/// `to_page`; a key already at `to` goes to where the moved key was. Only
+/// pages, not folders or the pinned actions, trade keys this way.
+fn swap_across_pages(
+    profile: &mut Profile,
+    from_page: &str,
+    from: u8,
+    to_page: &str,
+    to: u8,
+) -> bool {
+    let (Some(a), Some(b)) = (
+        profile.pages.iter().position(|p| p.id == from_page),
+        profile.pages.iter().position(|p| p.id == to_page),
+    ) else {
+        return false;
+    };
+    if a == b || to >= profile.model().key_count() {
+        return false;
+    }
+    let Some(key) = profile.pages.get_mut(a).and_then(|p| p.keys.remove(&from)) else {
+        return false;
+    };
+    let Some(target) = profile.pages.get_mut(b) else {
+        return false;
+    };
+    let displaced = target.keys.insert(to, key);
+    if let (Some(back), Some(source)) = (displaced, profile.pages.get_mut(a)) {
+        source.keys.insert(from, back);
+    }
+    true
 }
 
 /// Whether what is on the canvas has a key of its own at `index`.
@@ -274,6 +310,9 @@ pub struct App {
     selected_device: Option<String>,
     offline_profile: Option<String>,
     selected_key: Option<u8>,
+    /// The page chip a drag rests on, and since when: after a moment the
+    /// page opens, so the drag can end on one of its keys.
+    page_hover: Option<(usize, Instant)>,
     /// The profile whose pinned actions are on the canvas.
     pinned_view: Option<String>,
     /// Open while `selected_key` holds actions and is being edited.
@@ -363,6 +402,7 @@ impl App {
             selected_device: None,
             offline_profile: None,
             selected_key: None,
+            page_hover: None,
             pinned_view: None,
             group: None,
             group_holder: None,
@@ -1273,6 +1313,7 @@ impl App {
         let mut open_group = false;
         let mut command = None;
         let mut pin_command = None;
+        let mut cross_page = None;
         let live = view.live;
         if view.on_pinned() {
             profile.pinned.get_or_insert_with(Page::new);
@@ -1347,7 +1388,10 @@ impl App {
                 .as_ref()
                 .is_some_and(|k| k.action == actions::PARENT_FOLDER);
             if config.is_some() {
-                response.dnd_set_drag_payload(DragPayload::Key(index));
+                response.dnd_set_drag_payload(DragPayload::Key {
+                    page: page_id.clone(),
+                    index,
+                });
             }
             let hovered_drop = response.dnd_hover_payload::<DragPayload>().is_some();
             let border_color = if hovered_drop {
@@ -1423,7 +1467,11 @@ impl App {
                             open_group = true;
                         }
                     }
-                    &DragPayload::Key(from) if from != index => {
+                    DragPayload::Key { page, index: from } if *page != page_id => {
+                        // Applied after the loop, which holds this page's keys.
+                        cross_page = Some((page.clone(), *from, index));
+                    }
+                    &DragPayload::Key { index: from, .. } if from != index => {
                         let a = keys.remove(&from);
                         let b = keys.remove(&index);
                         if let Some(a) = a {
@@ -1433,7 +1481,7 @@ impl App {
                             keys.insert(from, b);
                         }
                     }
-                    DragPayload::Key(_) | DragPayload::Member(_) => {}
+                    DragPayload::Key { .. } | DragPayload::Member(_) => {}
                 }
                 self.selected_key = Some(index);
                 self.recording_hotkey = false;
@@ -1643,6 +1691,11 @@ impl App {
         {
             changed = true;
         }
+        if let Some((from_page, from, to)) = cross_page
+            && !view.on_pinned()
+        {
+            changed |= swap_across_pages(profile, &from_page, from, &page_id, to);
+        }
         if let Some(pin) = pin_command {
             let done = match &pin {
                 PinCommand::Pin(index, page) => profile.pin(page, *index),
@@ -1838,6 +1891,15 @@ impl App {
         let mut new_page = *page;
         let mut new_pinned = *pinned;
         let mut delete = None;
+        // An action or a key of a page can be dragged onto another page:
+        // resting on its chip opens it.
+        let springs =
+            egui::DragAndDrop::payload::<DragPayload>(ui.ctx()).is_some_and(|p| match &*p {
+                DragPayload::Action(_) => true,
+                DragPayload::Key { page, .. } => profile.pages.iter().any(|p| p.id == *page),
+                DragPayload::Member(_) => false,
+            });
+        let mut resting = None;
         {
             let r = Rect::from_min_size(pos2(strip.left() + 2.0, strip.top()), vec2(CHIP, HEIGHT));
             let resp = ui
@@ -1876,6 +1938,14 @@ impl App {
             let current = i == *page && !*pinned;
             if current {
                 painter.rect_filled(r.shrink2(vec2(1.0, 1.0)), CornerRadius::same(9), PAGER_CHIP);
+            } else if springs && resp.contains_pointer() {
+                resting = Some(i);
+                painter.rect_stroke(
+                    r.shrink2(vec2(1.0, 1.0)),
+                    CornerRadius::same(9),
+                    Stroke::new(2.0, KEY_DROP),
+                    egui::StrokeKind::Inside,
+                );
             }
             let color = if current {
                 PAGER_CHIP_TEXT
@@ -1921,6 +1991,23 @@ impl App {
                     ui.close();
                 }
             });
+        }
+        match (resting, self.page_hover) {
+            (Some(i), Some((was, since))) if i == was => {
+                if since.elapsed() >= PAGE_SPRING {
+                    new_page = i;
+                    new_pinned = false;
+                    self.page_hover = None;
+                } else {
+                    ui.ctx()
+                        .request_repaint_after(PAGE_SPRING.saturating_sub(since.elapsed()));
+                }
+            }
+            (Some(i), _) => {
+                self.page_hover = Some((i, Instant::now()));
+                ui.ctx().request_repaint_after(PAGE_SPRING);
+            }
+            (None, _) => self.page_hover = None,
         }
         if can_add {
             let r = Rect::from_min_max(
@@ -4771,7 +4858,7 @@ fn drag_preview(ctx: &egui::Context) {
     };
     let glyph = match &*payload {
         DragPayload::Action(uuid) => actions::find(uuid).map_or(icon::PUZZLE_PIECE, |a| a.icon),
-        DragPayload::Key(_) | DragPayload::Member(_) => icon::SQUARE,
+        DragPayload::Key { .. } | DragPayload::Member(_) => icon::SQUARE,
     };
     let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-preview"));
     let p = ctx.layer_painter(layer);
@@ -5395,6 +5482,37 @@ mod auto_exit_tests {
     }
 
     #[test]
+    fn a_key_dragged_to_another_page_moves_there_and_trades_places() {
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        profile.add_page();
+        let (one, two) = (profile.pages[0].id.clone(), profile.pages[1].id.clone());
+        profile.pages[0].keys.insert(2, new_key(actions::WEBSITE));
+        assert!(swap_across_pages(&mut profile, &one, 2, &two, 7));
+        assert!(profile.pages[0].keys.is_empty());
+        assert_eq!(profile.pages[1].keys[&7].action, actions::WEBSITE);
+
+        // A key already in the target place goes back to the first page.
+        profile.pages[0].keys.insert(3, new_key(actions::TEXT));
+        assert!(swap_across_pages(&mut profile, &one, 3, &two, 7));
+        assert_eq!(profile.pages[1].keys[&7].action, actions::TEXT);
+        assert_eq!(profile.pages[0].keys[&3].action, actions::WEBSITE);
+    }
+
+    #[test]
+    fn a_cross_page_drag_ignores_missing_pages_keys_and_places() {
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        profile.add_page();
+        let (one, two) = (profile.pages[0].id.clone(), profile.pages[1].id.clone());
+        profile.pages[0].keys.insert(0, new_key(actions::WEBSITE));
+        let before = profile.clone();
+        assert!(!swap_across_pages(&mut profile, &one, 0, "gone", 1));
+        assert!(!swap_across_pages(&mut profile, &one, 5, &two, 1));
+        assert!(!swap_across_pages(&mut profile, &one, 0, &two, 200));
+        assert!(!swap_across_pages(&mut profile, &one, 0, &one, 1));
+        assert_eq!(profile, before);
+    }
+
+    #[test]
     fn a_group_key_has_its_own_folder_exit_control_but_members_do_not() {
         let ctx = egui::Context::default();
         apply(&ctx);
@@ -5698,6 +5816,7 @@ mod clipboard_tests {
             selected_device: None,
             offline_profile: None,
             selected_key: Some(0),
+            page_hover: None,
             pinned_view: None,
             group: None,
             group_holder: None,
