@@ -215,6 +215,8 @@ enum DragPayload {
 
 enum KeyCommand {
     Copy(u8),
+    /// Copy the key, then take it off its page or folder.
+    Cut(u8),
     Paste(u8, Box<KeyClipboard>),
 }
 
@@ -1486,6 +1488,21 @@ impl App {
                 }
                 if ui
                     .add_enabled(
+                        config.is_some() && !placed,
+                        egui::Button::new(format!("{}  Cut", icon::SCISSORS)).shortcut_text(
+                            ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+                                egui::Modifiers::COMMAND,
+                                egui::Key::X,
+                            )),
+                        ),
+                    )
+                    .clicked()
+                {
+                    command = Some(KeyCommand::Cut(index));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
                         (config.is_some() || ghost.is_some()) && !placed,
                         egui::Button::new(format!("{}  Copy", icon::COPY)).shortcut_text(
                             ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
@@ -1657,7 +1674,7 @@ impl App {
         if let Some(command) = command {
             let from = match &command {
                 KeyCommand::Copy(index) => copy_from(*index),
-                KeyCommand::Paste(..) => page_id.clone(),
+                KeyCommand::Cut(..) | KeyCommand::Paste(..) => page_id.clone(),
             };
             self.key_command(ui.ctx(), profile, &from, view.path.len(), command);
         }
@@ -1674,6 +1691,15 @@ impl App {
                     &copy_from(index),
                     view.path.len(),
                     KeyCommand::Copy(index),
+                ),
+                // A pinned key shown on this page is cut from the pinned
+                // actions only by Unpin, as Delete leaves it too.
+                egui::Event::Cut if keys_has(profile, view, index) => self.key_command(
+                    ui.ctx(),
+                    profile,
+                    &page_id,
+                    view.path.len(),
+                    KeyCommand::Cut(index),
                 ),
                 egui::Event::Paste(text) => match KeyClipboard::from_text(&text) {
                     Ok(Some(copy)) => self.key_command(
@@ -2166,7 +2192,7 @@ impl App {
         }
         for event in clipboard_events(ui.ctx(), shortcuts) {
             match event {
-                egui::Event::Copy => {
+                egui::Event::Copy | egui::Event::Cut => {
                     if let Some(member) = group
                         .member
                         .and_then(|m| key.groups.get(group.list)?.get(m))
@@ -2176,6 +2202,7 @@ impl App {
                             Ok(text) => {
                                 ui.ctx().copy_text(text);
                                 self.clipboard = Some(copy);
+                                remove |= event == egui::Event::Cut;
                             }
                             Err(e) => runtime::lock(&self.state).notify(e),
                         }
@@ -3375,6 +3402,30 @@ impl App {
         }
     }
 
+    /// Puts the key on the clipboard; returns whether it was copied.
+    fn copy_key(
+        &mut self,
+        ctx: &egui::Context,
+        profile: &Profile,
+        page_id: &str,
+        index: u8,
+    ) -> bool {
+        let Some(copy) = KeyClipboard::copy(profile, page_id, index) else {
+            return false;
+        };
+        match copy.text() {
+            Ok(text) => {
+                ctx.copy_text(text);
+                self.clipboard = Some(copy);
+                true
+            }
+            Err(e) => {
+                runtime::lock(&self.state).notify(e);
+                false
+            }
+        }
+    }
+
     fn key_command(
         &mut self,
         ctx: &egui::Context,
@@ -3388,14 +3439,16 @@ impl App {
         }
         match command {
             KeyCommand::Copy(index) => {
-                if let Some(copy) = KeyClipboard::copy(profile, page_id, index) {
-                    match copy.text() {
-                        Ok(text) => {
-                            ctx.copy_text(text);
-                            self.clipboard = Some(copy);
-                        }
-                        Err(e) => runtime::lock(&self.state).notify(e),
-                    }
+                self.copy_key(ctx, profile, page_id, index);
+            }
+            KeyCommand::Cut(index) => {
+                let removed = self.copy_key(ctx, profile, page_id, index)
+                    && profile
+                        .all_pages_mut()
+                        .find(|p| p.id == page_id)
+                        .is_some_and(|page| page.keys.remove(&index).is_some());
+                if removed {
+                    self.mark_dirty(&profile.id);
                 }
             }
             KeyCommand::Paste(index, copy) => {
@@ -4893,7 +4946,10 @@ fn clipboard_events(ctx: &egui::Context, enabled: bool) -> Vec<egui::Event> {
     ctx.input_mut(|i| {
         let mut events = Vec::new();
         i.events.retain(|event| {
-            if matches!(event, egui::Event::Copy | egui::Event::Paste(_)) {
+            if matches!(
+                event,
+                egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)
+            ) {
                 events.push(event.clone());
                 false
             } else {
@@ -6010,6 +6066,101 @@ mod clipboard_tests {
         assert!(app.pending_paste.is_none());
         assert_eq!(profile, original);
         assert!(app.dirty.is_empty());
+    }
+
+    #[test]
+    fn keyboard_cut_moves_a_key_and_is_undone() {
+        let ctx = egui::Context::default();
+        ctx.set_os(egui::os::OperatingSystem::Windows);
+        apply(&ctx);
+        let mut app = editor();
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        let key = KeyConfig::new(actions::WEBSITE, json!({"url": "https://example.com"}));
+        profile.pages[0].keys.insert(0, key.clone());
+        app.selected_key = Some(0);
+        frame(&ctx, &mut app, &mut profile, vec![egui::Event::Cut], false);
+        assert!(!profile.pages[0].keys.contains_key(&0));
+        assert_eq!(app.clipboard.as_ref().and_then(|c| c.key()), Some(&key));
+        assert!(app.dirty.contains(&profile.id));
+
+        let text = app.clipboard.as_ref().unwrap().text().unwrap();
+        app.selected_key = Some(2);
+        frame(
+            &ctx,
+            &mut app,
+            &mut profile,
+            vec![egui::Event::Paste(text)],
+            false,
+        );
+        assert_eq!(profile.pages[0].keys[&2], key);
+
+        let undo = || shortcut(egui::Key::Z, false, false);
+        frame(&ctx, &mut app, &mut profile, vec![undo()], false);
+        frame(&ctx, &mut app, &mut profile, vec![undo()], false);
+        assert_eq!(profile.pages[0].keys[&0], key);
+        assert!(!profile.pages[0].keys.contains_key(&2));
+    }
+
+    #[test]
+    fn cut_leaves_blank_keys_pinned_keys_and_text_fields_alone() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let mut app = editor();
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        let key = KeyConfig::new(actions::WEBSITE, json!({}));
+        profile.pages[0].keys.insert(0, key.clone());
+        let page = profile.pages[0].id.clone();
+        profile.pages[0].keys.insert(1, key.clone());
+        profile.pin(&page, 1).unwrap();
+        let original = profile.clone();
+        for (index, text_focus) in [(0, true), (1, false), (3, false)] {
+            app.selected_key = Some(index);
+            frame(
+                &ctx,
+                &mut app,
+                &mut profile,
+                vec![egui::Event::Cut],
+                text_focus,
+            );
+            assert_eq!(profile, original, "key {index}");
+            assert!(app.clipboard.is_none(), "key {index}");
+        }
+    }
+
+    #[test]
+    fn keyboard_cut_moves_an_action_out_of_a_multi_action() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let mut app = editor();
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        let mut key = new_key(actions::MULTI_ACTION);
+        let first = KeyConfig::new(actions::WEBSITE, json!({"url": "https://example.com"}));
+        let second = KeyConfig::new(actions::TEXT, json!({}));
+        key.groups[0].push(first.clone());
+        key.groups[0].push(second.clone());
+        profile.pages[0].keys.insert(0, key);
+        app.selected_key = Some(0);
+        app.group = Some(GroupEdit {
+            list: 0,
+            member: Some(0),
+        });
+        let view = View {
+            pinned: false,
+            page: 0,
+            path: Vec::new(),
+            live: Live::default(),
+        };
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(852.0, 742.0))),
+                events: vec![egui::Event::Cut],
+                ..Default::default()
+            },
+            |ui| app.group_canvas(ui, &mut profile, &view),
+        );
+        output.textures_delta.clear();
+        assert_eq!(profile.pages[0].keys[&0].groups[0], vec![second]);
+        assert_eq!(app.clipboard.as_ref().and_then(|c| c.key()), Some(&first));
     }
 
     #[test]
