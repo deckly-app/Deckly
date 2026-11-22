@@ -52,3 +52,23 @@ clipboard behavior on every desktop.
 Native clipboard behavior on Linux X11, Linux Wayland and macOS; physical
 hardware was not used. An isolated test-profile window was launched without
 device access for the owner's Windows check.
+
+## Cut — 2026-11-22
+
+Source/method: the owner's request for Ctrl+X, Deckly's own source and the
+installed egui-winit 0.36.2 source. No official application was inspected.
+
+- **Observed:** egui-winit turns Ctrl+X on Windows and Linux, and Cmd+X on
+  macOS, into a `Cut` event, with the same physical-key fallback as Copy and
+  Paste.
+- Deckly now handles `Cut` like Copy, then takes the key off its page or
+  folder; the key's context menu has a Cut item. A cut is one undo step.
+  Blank keys, the Parent Folder action and pinned keys that a page only
+  shows are not cut (Delete leaves the last two alone too). In the Multi
+  Action and Key Logic editor, Cut copies the selected action and removes it
+  from its list.
+- Regression checks: `app::clipboard_tests::keyboard_cut_moves_a_key_and_is_undone`,
+  `cut_leaves_blank_keys_pinned_keys_and_text_fields_alone` and
+  `keyboard_cut_moves_an_action_out_of_a_multi_action`.
+- **Unknown:** native Ctrl+X on each desktop; only simulated egui events were
+  tested.
