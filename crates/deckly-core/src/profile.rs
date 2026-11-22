@@ -181,6 +181,108 @@ pub struct Wallpaper {
     pub x: u16,
     #[serde(default = "Wallpaper::middle")]
     pub y: u16,
+    /// More pictures shown in turn after this one. Never set on the
+    /// pictures inside a slideshow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slideshow: Option<Slideshow>,
+}
+
+/// Pictures a wallpaper changes to in turn, with an animated transition
+/// between them. A Deckly feature (docs/clean-room/2026-11-22-wallpaper-slideshow.md).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Slideshow {
+    /// The pictures after the wallpaper's own, in order; then it starts over.
+    #[serde(default)]
+    pub slides: Vec<Wallpaper>,
+    /// How long each picture stays, in seconds.
+    #[serde(default = "Slideshow::default_interval")]
+    pub interval: u32,
+    #[serde(default)]
+    pub transition: Transition,
+    /// How long a transition takes, in milliseconds.
+    #[serde(default = "Slideshow::default_duration")]
+    pub duration: u32,
+}
+
+/// How one picture of a slideshow gives way to the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transition {
+    /// Key by key, from the top left corner to the bottom right one.
+    #[default]
+    Diagonal,
+    /// Key by key, from the middle outwards.
+    Center,
+    /// An edge moves across the keys and uncovers the next picture.
+    Wipe,
+    /// The next picture pushes the shown one out to the left.
+    Push,
+    /// The next picture fades in over the shown one.
+    Fade,
+}
+
+impl Transition {
+    pub const ALL: [Self; 5] = [
+        Self::Diagonal,
+        Self::Center,
+        Self::Wipe,
+        Self::Push,
+        Self::Fade,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Diagonal => "Wave across",
+            Self::Center => "Wave from the middle",
+            Self::Wipe => "Wipe",
+            Self::Push => "Push",
+            Self::Fade => "Crossfade",
+        }
+    }
+}
+
+impl Slideshow {
+    /// Pictures in one slideshow, the wallpaper's own included.
+    pub const MAX_PICTURES: usize = 32;
+    pub const MIN_INTERVAL: u32 = 2;
+    /// One day.
+    pub const MAX_INTERVAL: u32 = 24 * 60 * 60;
+    pub const MIN_DURATION: u32 = 100;
+    pub const MAX_DURATION: u32 = 5000;
+
+    pub fn new() -> Self {
+        Self {
+            slides: Vec::new(),
+            interval: Self::default_interval(),
+            transition: Transition::default(),
+            duration: Self::default_duration(),
+        }
+    }
+
+    fn default_interval() -> u32 {
+        30
+    }
+
+    fn default_duration() -> u32 {
+        1000
+    }
+
+    fn sanitize(&mut self) {
+        self.slides.retain(|w| !w.image.as_os_str().is_empty());
+        self.slides.truncate(Self::MAX_PICTURES - 1);
+        for slide in &mut self.slides {
+            slide.slideshow = None;
+            slide.sanitize();
+        }
+        self.interval = self.interval.clamp(Self::MIN_INTERVAL, Self::MAX_INTERVAL);
+        self.duration = self.duration.clamp(Self::MIN_DURATION, Self::MAX_DURATION);
+    }
+}
+
+impl Default for Slideshow {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Wallpaper {
@@ -195,7 +297,90 @@ impl Wallpaper {
             zoom: Self::default_zoom(),
             x: Self::middle(),
             y: Self::middle(),
+            slideshow: None,
         }
+    }
+
+    /// How many pictures it shows in turn: 1 without a slideshow.
+    pub fn slide_count(&self) -> usize {
+        1 + self.slideshow.as_ref().map_or(0, |s| s.slides.len())
+    }
+
+    /// Picture `index` of the slideshow; 0 is the wallpaper itself.
+    pub fn slide(&self, index: usize) -> Option<&Wallpaper> {
+        match index {
+            0 => Some(self),
+            i => self.slideshow.as_ref()?.slides.get(i - 1),
+        }
+    }
+
+    pub fn slide_mut(&mut self, index: usize) -> Option<&mut Wallpaper> {
+        match index {
+            0 => Some(self),
+            i => self.slideshow.as_mut()?.slides.get_mut(i - 1),
+        }
+    }
+
+    /// Whether two wallpapers show the same picture the same way, whatever
+    /// their slideshows.
+    pub fn same_picture(&self, other: &Wallpaper) -> bool {
+        (&self.image, self.zoom, self.x, self.y) == (&other.image, other.zoom, other.x, other.y)
+    }
+
+    /// Takes picture `index` out of the slideshow. The next picture takes
+    /// the place of the first one; the last one cannot go.
+    pub fn remove_slide(&mut self, index: usize) {
+        let Some(show) = self.slideshow.as_mut() else {
+            return;
+        };
+        if index == 0 {
+            if show.slides.is_empty() {
+                return;
+            }
+            let next = show.slides.remove(0);
+            (self.image, self.zoom, self.x, self.y) = (next.image, next.zoom, next.x, next.y);
+        } else if index <= show.slides.len() {
+            show.slides.remove(index - 1);
+        }
+        if show.slides.is_empty() {
+            self.slideshow = None;
+        }
+    }
+
+    /// Swaps pictures `a` and `b` of the slideshow.
+    pub fn swap_slides(&mut self, a: usize, b: usize) {
+        let count = self.slide_count();
+        if a == b || a >= count || b >= count {
+            return;
+        }
+        let (a, b) = (a.min(b), a.max(b));
+        let Some(show) = self.slideshow.as_mut() else {
+            return;
+        };
+        if a == 0 {
+            let Some(other) = show.slides.get_mut(b - 1) else {
+                return;
+            };
+            std::mem::swap(&mut self.image, &mut other.image);
+            std::mem::swap(&mut self.zoom, &mut other.zoom);
+            std::mem::swap(&mut self.x, &mut other.x);
+            std::mem::swap(&mut self.y, &mut other.y);
+        } else {
+            show.slides.swap(a - 1, b - 1);
+        }
+    }
+
+    /// Adds a picture at the end of the slideshow, unless it is full.
+    pub fn push_slide(&mut self, slide: Wallpaper) -> bool {
+        if self.slide_count() >= Slideshow::MAX_PICTURES {
+            return false;
+        }
+        let show = self.slideshow.get_or_insert_with(Slideshow::new);
+        show.slides.push(Wallpaper {
+            slideshow: None,
+            ..slide
+        });
+        true
     }
 
     fn default_zoom() -> u16 {
@@ -210,6 +395,19 @@ impl Wallpaper {
         self.zoom = self.zoom.clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
         self.x = self.x.min(Self::END);
         self.y = self.y.min(Self::END);
+        if let Some(show) = &mut self.slideshow {
+            show.sanitize();
+            if show.slides.is_empty() {
+                self.slideshow = None;
+            }
+        }
+    }
+
+    /// Drops slideshow pictures whose path is longer than `max` bytes.
+    pub(crate) fn drop_long_slides(&mut self, max: usize) {
+        if let Some(show) = &mut self.slideshow {
+            show.slides.retain(|w| w.image.as_os_str().len() <= max);
+        }
     }
 
     pub(crate) fn sanitize_optional(wallpaper: &mut Option<Self>) {
@@ -222,14 +420,41 @@ impl Wallpaper {
         }
     }
 
-    fn visit_picture(wallpaper: &mut Option<Self>, visit: &mut impl FnMut(&mut Option<PathBuf>)) {
-        if let Some(wall) = wallpaper {
-            let mut image = Some(std::mem::take(&mut wall.image));
-            visit(&mut image);
-            match image {
-                Some(image) => wall.image = image,
-                None => *wallpaper = None,
-            }
+    /// Visits every picture of a wallpaper and its slideshow. A picture
+    /// set to `None` leaves the slideshow; the next one takes the place of
+    /// the first, and with none left the wallpaper goes.
+    pub fn visit_picture(
+        wallpaper: &mut Option<Self>,
+        visit: &mut impl FnMut(&mut Option<PathBuf>),
+    ) {
+        let Some(wall) = wallpaper else {
+            return;
+        };
+        if let Some(show) = &mut wall.slideshow {
+            show.slides.retain_mut(|slide| {
+                let mut image = Some(std::mem::take(&mut slide.image));
+                visit(&mut image);
+                match image {
+                    Some(image) => {
+                        slide.image = image;
+                        true
+                    }
+                    None => false,
+                }
+            });
+        }
+        let mut image = Some(std::mem::take(&mut wall.image));
+        visit(&mut image);
+        match image {
+            Some(image) => wall.image = image,
+            // The next picture of the slideshow takes its place.
+            None if wall.slide_count() > 1 => wall.remove_slide(0),
+            None => *wallpaper = None,
+        }
+        if let Some(wall) = wallpaper
+            && wall.slideshow.as_ref().is_some_and(|s| s.slides.is_empty())
+        {
+            wall.slideshow = None;
         }
     }
 }
@@ -1780,6 +2005,131 @@ mod tests {
         });
         let back = Profile::from_json(&p.to_json().unwrap()).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn slideshows_round_trip_and_old_wallpapers_have_none() {
+        let text = r#"{"id":"a","name":"x","device":"mk2",
+            "wallpaper":{"image":"w.png","zoom":150},"pages":[{"id":"p","keys":{}}]}"#;
+        let mut p = Profile::from_json(text).unwrap();
+        let wall = p.wallpaper.as_mut().unwrap();
+        assert_eq!(wall.slideshow, None);
+        assert_eq!(wall.slide_count(), 1);
+        assert!(!p.to_json().unwrap().contains("slideshow"));
+        let wall = p.wallpaper.as_mut().unwrap();
+        assert!(wall.push_slide(Wallpaper {
+            zoom: 300,
+            ..Wallpaper::new("second.png".into())
+        }));
+        let show = wall.slideshow.as_mut().unwrap();
+        show.interval = 90;
+        show.transition = Transition::Push;
+        show.duration = 1500;
+        let json = p.to_json().unwrap();
+        assert!(json.contains(r#""transition": "push""#));
+        let back = Profile::from_json(&json).unwrap();
+        assert_eq!(back, p);
+        let wall = back.wallpaper.unwrap();
+        assert_eq!(wall.slide_count(), 2);
+        assert_eq!(wall.slide(1).unwrap().zoom, 300);
+        // Missing fields take their defaults.
+        let text = r#"{"id":"a","name":"x","device":"mk2","pages":[{"id":"p","keys":{},
+            "wallpaper":{"image":"w.png","slideshow":{"slides":[{"image":"b.png"}]}}}]}"#;
+        let p = Profile::from_json(text).unwrap();
+        let show = p.pages[0]
+            .wallpaper
+            .as_ref()
+            .unwrap()
+            .slideshow
+            .clone()
+            .unwrap();
+        assert_eq!(
+            show,
+            Slideshow {
+                slides: show.slides.clone(),
+                ..Slideshow::new()
+            }
+        );
+    }
+
+    #[test]
+    fn slideshows_are_brought_within_limits() {
+        let slides: Vec<String> = (0..100)
+            .map(|i| format!(r#"{{"image":"s{i}.png","zoom":9999,"slideshow":{{"slides":[{{"image":"x.png"}}]}}}}"#))
+            .chain([r#"{"image":""}"#.to_owned()])
+            .collect();
+        let text = format!(
+            r#"{{"id":"a","name":"x","device":"mk2","pages":[{{"id":"p","keys":{{}}}}],
+            "wallpaper":{{"image":"w.png","slideshow":{{"slides":[{}],"interval":0,"duration":99999}}}}}}"#,
+            slides.join(",")
+        );
+        let p = Profile::from_json(&text).unwrap();
+        let wall = p.wallpaper.unwrap();
+        assert_eq!(wall.slide_count(), Slideshow::MAX_PICTURES);
+        let show = wall.slideshow.as_ref().unwrap();
+        assert_eq!(show.interval, Slideshow::MIN_INTERVAL);
+        assert_eq!(show.duration, Slideshow::MAX_DURATION);
+        assert!(
+            show.slides
+                .iter()
+                .all(|s| s.slideshow.is_none() && s.zoom == Wallpaper::MAX_ZOOM)
+        );
+        // A slideshow with no pictures of its own is no slideshow.
+        let text = r#"{"id":"a","name":"x","device":"mk2","pages":[{"id":"p","keys":{}}],
+            "wallpaper":{"image":"w.png","slideshow":{"slides":[{"image":""}],"interval":99999999}}}"#;
+        let p = Profile::from_json(text).unwrap();
+        assert_eq!(p.wallpaper.unwrap().slideshow, None);
+    }
+
+    #[test]
+    fn slides_move_and_go_while_the_first_picture_stays_the_wallpaper() {
+        let names = |w: &Wallpaper| -> Vec<String> {
+            (0..w.slide_count())
+                .map(|i| w.slide(i).unwrap().image.display().to_string())
+                .collect()
+        };
+        let mut w = Wallpaper::new("a".into());
+        w.push_slide(Wallpaper::new("b".into()));
+        w.push_slide(Wallpaper {
+            zoom: 200,
+            ..Wallpaper::new("c".into())
+        });
+        w.swap_slides(0, 2);
+        assert_eq!(names(&w), ["c", "b", "a"]);
+        assert_eq!(w.zoom, 200);
+        w.swap_slides(1, 2);
+        assert_eq!(names(&w), ["c", "a", "b"]);
+        w.swap_slides(0, 9);
+        assert_eq!(names(&w), ["c", "a", "b"]);
+        w.remove_slide(0);
+        assert_eq!(names(&w), ["a", "b"]);
+        assert_eq!(w.zoom, Wallpaper::MIN_ZOOM);
+        w.remove_slide(1);
+        assert_eq!(names(&w), ["a"]);
+        assert_eq!(w.slideshow, None);
+        w.remove_slide(0);
+        assert_eq!(names(&w), ["a"]);
+        for i in 1..Slideshow::MAX_PICTURES {
+            assert!(w.push_slide(Wallpaper::new(format!("{i}").into())));
+        }
+        assert!(!w.push_slide(Wallpaper::new("full".into())));
+    }
+
+    #[test]
+    fn a_missing_first_slide_gives_way_to_the_next() {
+        let mut p = Profile::new("x", DeviceKind::Mk2);
+        let mut w = Wallpaper::new("gone.png".into());
+        w.push_slide(Wallpaper::new("kept.png".into()));
+        w.push_slide(Wallpaper::new("gone.png".into()));
+        p.wallpaper = Some(w);
+        p.for_each_picture(|pic| {
+            if pic.as_deref() == Some(Path::new("gone.png")) {
+                *pic = None;
+            }
+        });
+        let w = p.wallpaper.unwrap();
+        assert_eq!(w.image, Path::new("kept.png"));
+        assert_eq!(w.slideshow, None);
     }
 
     #[test]

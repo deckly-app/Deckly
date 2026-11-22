@@ -1433,11 +1433,9 @@ impl App {
             return;
         };
         for index in 0..model.key_count() {
-            let backdrop = wallpaper.as_ref().map(|wallpaper| Backdrop {
-                wallpaper,
-                model,
-                index,
-            });
+            let backdrop = wallpaper
+                .as_ref()
+                .map(|wallpaper| Backdrop::still(wallpaper, model, index));
             let (c, r) = (
                 f32::from(index % model.columns),
                 f32::from(index / model.columns),
@@ -2830,11 +2828,9 @@ impl App {
             // Key preview and image controls.
             ui.vertical(|ui| {
                 ui.set_width(110.0);
-                let backdrop = wallpaper.as_ref().map(|wallpaper| Backdrop {
-                    wallpaper,
-                    model,
-                    index,
-                });
+                let backdrop = wallpaper
+                    .as_ref()
+                    .map(|wallpaper| Backdrop::still(wallpaper, model, index));
                 let tex = self.texture(
                     ui.ctx(),
                     Some(key),

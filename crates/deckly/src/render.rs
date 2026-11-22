@@ -12,10 +12,10 @@ use crate::protect::Look;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
 use deckly_core::{
     DeviceModel, FeedbackMarks, ImageFormat, KeyConfig, KeyPress, MarkStyle, Orientation,
-    RingStyle, Rotation, TitleAlign, TitleStyle, Turn, Wallpaper,
+    RingStyle, Rotation, TitleAlign, TitleStyle, Transition, Turn, Wallpaper,
 };
 use image::{ImageReader, Limits, Rgba, RgbaImage, imageops};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -45,6 +45,116 @@ pub struct Backdrop<'a> {
     pub model: &'a DeviceModel,
     /// The key, row by row as the user sees the keys.
     pub index: u8,
+    /// A slideshow on its way from `wallpaper` to the next picture.
+    pub change: Option<Change<'a>>,
+}
+
+/// A slideshow transition in progress, the same for all keys of a panel.
+#[derive(Clone, Copy)]
+pub struct Change<'a> {
+    pub to: &'a Wallpaper,
+    pub transition: Transition,
+    /// How far it is, in thousandths.
+    pub progress: u16,
+}
+
+/// The end of a transition's progress.
+pub const CHANGE_END: u16 = 1000;
+
+impl<'a> Backdrop<'a> {
+    pub fn still(wallpaper: &'a Wallpaper, model: &'a DeviceModel, index: u8) -> Self {
+        Self {
+            wallpaper,
+            model,
+            index,
+            change: None,
+        }
+    }
+
+    /// What this key shows of the wallpaper now.
+    fn layer(&self) -> Layer<'a> {
+        let Some(change) = self.change else {
+            return Layer::Still(self.wallpaper);
+        };
+        let (from, to) = (self.wallpaper, change.to);
+        let progress = change.progress.min(CHANGE_END);
+        let mix = Layer::Mix {
+            from,
+            to,
+            transition: change.transition,
+            progress,
+        };
+        match change.transition {
+            Transition::Diagonal | Transition::Center => {
+                let at = wave_turn(self.model, self.index, change.transition);
+                Layer::Still(if progress >= at { to } else { from })
+            }
+            Transition::Wipe => {
+                let Some(rect) = self.model.key_rects().get(usize::from(self.index)).copied()
+                else {
+                    return Layer::Still(from);
+                };
+                let edge = eased(progress) * self.model.panel_size().0 as f32;
+                if edge >= (rect.x + rect.size) as f32 {
+                    Layer::Still(to)
+                } else if edge <= rect.x as f32 {
+                    Layer::Still(from)
+                } else {
+                    mix
+                }
+            }
+            Transition::Push | Transition::Fade => match progress {
+                0 => Layer::Still(from),
+                CHANGE_END => Layer::Still(to),
+                _ => mix,
+            },
+        }
+    }
+}
+
+/// What of a wallpaper one key shows.
+#[derive(Clone, Copy)]
+enum Layer<'a> {
+    Still(&'a Wallpaper),
+    /// Parts of two pictures, or both at once.
+    Mix {
+        from: &'a Wallpaper,
+        to: &'a Wallpaper,
+        transition: Transition,
+        progress: u16,
+    },
+}
+
+/// When, in thousandths of a wave, a key turns to the next picture. Keys
+/// turn one after another, each once, so a wave sends every key one image.
+fn wave_turn(model: &DeviceModel, index: u8, transition: Transition) -> u16 {
+    let columns = model.columns.max(1);
+    let (c, r) = (f32::from(index % columns), f32::from(index / columns));
+    let (last_c, last_r) = (f32::from(columns - 1), f32::from(model.rows.max(1) - 1));
+    let along = match transition {
+        Transition::Center => {
+            let (mx, my) = (last_c / 2.0, last_r / 2.0);
+            let far = mx.hypot(my);
+            if far > 0.0 {
+                (c - mx).hypot(r - my) / far
+            } else {
+                0.0
+            }
+        }
+        _ => {
+            let far = last_c + last_r;
+            if far > 0.0 { (c + r) / far } else { 0.0 }
+        }
+    };
+    // The first key turns a little after the start, the last a little
+    // before the end, so both ends of the wave show.
+    (50.0 + along.clamp(0.0, 1.0) * 900.0).round() as u16
+}
+
+/// Progress that starts and ends gently, from 0 to 1.
+fn eased(progress: u16) -> f32 {
+    let t = (f32::from(progress.min(CHANGE_END)) / f32::from(CHANGE_END)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// What a key shows that is not in its configuration.
@@ -141,6 +251,8 @@ pub struct Renderer {
     icon_font: Option<FontArc>,
     images: HashMap<PathBuf, Picture>,
     wallpapers: HashMap<PathBuf, Option<Arc<RgbaImage>>>,
+    /// Custom still pictures without a transparent pixel.
+    opaque: HashSet<PathBuf>,
 }
 
 impl Renderer {
@@ -153,6 +265,7 @@ impl Renderer {
             icon_font: FontArc::try_from_slice(egui_phosphor::Variant::Regular.font_bytes()).ok(),
             images: HashMap::new(),
             wallpapers: HashMap::new(),
+            opaque: HashSet::new(),
         }
     }
 
@@ -160,6 +273,7 @@ impl Renderer {
     pub fn clear_image_cache(&mut self) {
         self.images.clear();
         self.wallpapers.clear();
+        self.opaque.clear();
         animation::clear_cache();
     }
 
@@ -203,7 +317,10 @@ impl Renderer {
         backdrop: Option<Backdrop<'_>>,
     ) -> RgbaImage {
         let size = size.clamp(8, 1024);
-        let tile = backdrop.and_then(|b| self.wallpaper_tile(b, size));
+        // A key that covers its piece of the wallpaper needs none.
+        let tile = backdrop
+            .filter(|_| !self.covers(key, live, overlay))
+            .and_then(|b| self.wallpaper_tile(b, size));
         let Some(key) = key else {
             return tile.unwrap_or_else(|| RgbaImage::from_pixel(size, size, EMPTY));
         };
@@ -389,7 +506,10 @@ impl Renderer {
         backdrop: Option<Backdrop<'_>>,
     ) -> u64 {
         let mut h = DefaultHasher::new();
-        hash_backdrop(backdrop, &mut h);
+        // The wallpaper under a key that covers it changes nothing.
+        if !self.covers(key, live, overlay) {
+            hash_backdrop(backdrop, &mut h);
+        }
         if let Some(key) = key {
             // No overlay draws like an empty one, so a hidden mark that
             // comes and goes on a built-in key changes nothing.
@@ -451,6 +571,29 @@ impl Renderer {
         live.exit
     }
 
+    /// Whether the key's picture hides the wallpaper behind it entirely:
+    /// an opaque still picture, drawn at full size. Pictures not read yet
+    /// count as not covering.
+    fn covers(&self, key: Option<&KeyConfig>, live: Live, overlay: Option<&Overlay>) -> bool {
+        let Some(key) = key else {
+            return false;
+        };
+        if self.pressed_size(live).is_some() {
+            return false;
+        }
+        if let Some(path) = key.image.as_deref() {
+            match self.images.get(path) {
+                Some(Picture::Still(_)) => return self.opaque.contains(path),
+                // Unreadable pictures fall back to the plugin's.
+                Some(Picture::Broken | Picture::Missing) => {}
+                Some(Picture::Animated(_)) | None => return false,
+            }
+        }
+        overlay
+            .and_then(|o| o.image.as_ref())
+            .is_some_and(|i| is_opaque(&i.img))
+    }
+
     /// The size a key is drawn at in percent, when it is drawn smaller.
     fn pressed_size(&self, live: Live) -> Option<u8> {
         (live.pressed && self.key_press.shrink).then_some(self.key_press.size)
@@ -502,14 +645,80 @@ impl Renderer {
     }
 
     fn wallpaper_tile(&mut self, backdrop: Backdrop<'_>, size: u32) -> Option<RgbaImage> {
-        let src = self.wallpaper(&backdrop.wallpaper.image)?;
-        wallpaper_tile(
-            &src,
-            backdrop.wallpaper,
-            backdrop.model,
-            backdrop.index,
-            size,
-        )
+        let model = backdrop.model;
+        let rect = *model.key_rects().get(usize::from(backdrop.index))?;
+        let size = size.clamp(1, 1024);
+        let (from, to, transition, progress) = match backdrop.layer() {
+            Layer::Still(wallpaper) => {
+                let src = self.wallpaper(&wallpaper.image)?;
+                return wallpaper_tile(&src, wallpaper, model, backdrop.index, size);
+            }
+            Layer::Mix {
+                from,
+                to,
+                transition,
+                progress,
+            } => (from, to, transition, progress),
+        };
+        let t = eased(progress);
+        let panel = model.panel_size();
+        let pw = panel.0 as f32;
+        let (x, k) = (rect.x as f32, rect.size as f32);
+        let region = |left: f32, width: f32| [left, rect.y as f32, width, k];
+        let px = |panel: f32| ((panel / k.max(1.0)) * size as f32).round() as u32;
+        match transition {
+            Transition::Fade => {
+                let a = self.piece(from, panel, region(x, k), (size, size));
+                let b = self.piece(to, panel, region(x, k), (size, size));
+                Some(crossfade(&a, &b, t))
+            }
+            Transition::Wipe => {
+                // The next picture shows left of the edge.
+                let split = (t * pw - x).clamp(0.0, k);
+                let left = px(split).min(size);
+                let a = self.piece(to, panel, region(x, split), (left, size));
+                let b = self.piece(
+                    from,
+                    panel,
+                    region(x + split, k - split),
+                    (size - left, size),
+                );
+                Some(join(&a, &b, size))
+            }
+            // Push, and waves that reach here only by mistake.
+            _ => {
+                // The shown picture moves left by `shift`; the next one
+                // follows right behind it.
+                let shift = t * pw;
+                let split = (pw - shift - x).clamp(0.0, k);
+                let left = px(split).min(size);
+                let a = self.piece(from, panel, region(x + shift, split), (left, size));
+                let b = self.piece(
+                    to,
+                    panel,
+                    region(x + split + shift - pw, k - split),
+                    (size - left, size),
+                );
+                Some(join(&a, &b, size))
+            }
+        }
+    }
+
+    /// A part of the panel of a wallpaper at `out` pixels, or black if the
+    /// picture cannot be read.
+    fn piece(
+        &mut self,
+        wallpaper: &Wallpaper,
+        panel: (u32, u32),
+        region: [f32; 4],
+        out: (u32, u32),
+    ) -> RgbaImage {
+        if out.0 == 0 || out.1 == 0 {
+            return RgbaImage::new(out.0, out.1);
+        }
+        self.wallpaper(&wallpaper.image)
+            .and_then(|src| wallpaper_piece(&src, wallpaper, panel, region, out))
+            .unwrap_or_else(|| RgbaImage::from_pixel(out.0, out.1, EMPTY))
     }
 
     fn page_picture(&mut self, page: &PageTile, size: u32) -> RgbaImage {
@@ -529,6 +738,11 @@ impl Renderer {
         let picture = Picture::load(path);
         // Keep animation frames only in the shared, bounded cache.
         if !matches!(picture, Picture::Animated(_)) {
+            if let Picture::Still(img) = &picture
+                && is_opaque(img)
+            {
+                self.opaque.insert(path.to_owned());
+            }
             self.images.insert(path.to_owned(), picture.clone());
         }
         picture
@@ -597,11 +811,31 @@ pub fn wallpaper_tile(
     size: u32,
 ) -> Option<RgbaImage> {
     let rect = *model.key_rects().get(usize::from(index))?;
-    let panel = model.panel_size();
+    let size = size.clamp(1, 1024);
+    let region = [
+        rect.x as f32,
+        rect.y as f32,
+        rect.size as f32,
+        rect.size as f32,
+    ];
+    wallpaper_piece(src, wallpaper, model.panel_size(), region, (size, size))
+}
+
+/// The part `region` (left, top, width, height in panel pixels) of a
+/// wallpaper spread over a panel of `panel` pixels, at `out` pixels and
+/// opaque.
+fn wallpaper_piece(
+    src: &RgbaImage,
+    wallpaper: &Wallpaper,
+    panel: (u32, u32),
+    region: [f32; 4],
+    out: (u32, u32),
+) -> Option<RgbaImage> {
     let [left, top, w, h] = wallpaper_view(src.dimensions(), wallpaper, panel);
     let (fx, fy) = (w / panel.0.max(1) as f32, h / panel.1.max(1) as f32);
-    let (x0, y0) = (left + rect.x as f32 * fx, top + rect.y as f32 * fy);
-    let (x1, y1) = (x0 + rect.size as f32 * fx, y0 + rect.size as f32 * fy);
+    let [rx, ry, rw, rh] = region;
+    let (x0, y0) = (left + rx.max(0.0) * fx, top + ry.max(0.0) * fy);
+    let (x1, y1) = (x0 + rw.max(0.0) * fx, y0 + rh.max(0.0) * fy);
     let (sw, sh) = src.dimensions();
     let (cx, cy) = (x0.floor() as u32, y0.floor() as u32);
     if cx >= sw || cy >= sh {
@@ -614,13 +848,38 @@ pub fn wallpaper_tile(
     for px in piece.pixels_mut() {
         px.0[3] = 255;
     }
-    let size = size.clamp(1, 1024);
     Some(imageops::resize(
         &piece,
-        size,
-        size,
+        out.0.clamp(1, 1024),
+        out.1.clamp(1, 1024),
         imageops::FilterType::Triangle,
     ))
+}
+
+/// `a` on the left and `b` on the right, side by side in a square of
+/// `size` pixels.
+fn join(a: &RgbaImage, b: &RgbaImage, size: u32) -> RgbaImage {
+    let mut out = RgbaImage::from_pixel(size, size, EMPTY);
+    imageops::replace(&mut out, a, 0, 0);
+    imageops::replace(&mut out, b, i64::from(a.width()), 0);
+    out
+}
+
+/// `a` turning into `b`: `t` is 0 for all `a` and 1 for all `b`.
+fn crossfade(a: &RgbaImage, b: &RgbaImage, t: f32) -> RgbaImage {
+    let w = (t.clamp(0.0, 1.0) * 256.0).round() as u32;
+    let mut out = a.clone();
+    for (o, p) in out.pixels_mut().zip(b.pixels()) {
+        for (c, &d) in o.0[..3].iter_mut().zip(&p.0[..3]) {
+            *c = ((u32::from(*c) * (256 - w) + u32::from(d) * w + 128) >> 8) as u8;
+        }
+    }
+    out
+}
+
+/// Whether a picture has no transparent pixel.
+fn is_opaque(img: &RgbaImage) -> bool {
+    img.pixels().all(|p| p.0[3] == 255)
 }
 
 /// The whole panel of a wallpaper at `width` pixels, for the editor.
@@ -825,8 +1084,23 @@ fn fit_box(src: &RgbaImage, side: u32) -> RgbaImage {
 
 /// What of a wallpaper shows under a key, for its hash.
 fn hash_backdrop(backdrop: Option<Backdrop<'_>>, h: &mut DefaultHasher) {
+    // The picture and its place, not the slideshow around it: a key shows
+    // the same whether it reached a picture by a transition or not.
+    let picture = |w: &Wallpaper, h: &mut DefaultHasher| (&w.image, w.zoom, w.x, w.y).hash(h);
     if let Some(b) = backdrop {
-        b.wallpaper.hash(h);
+        match b.layer() {
+            Layer::Still(w) => picture(w, h),
+            Layer::Mix {
+                from,
+                to,
+                transition,
+                progress,
+            } => {
+                picture(from, h);
+                picture(to, h);
+                (transition, progress).hash(h);
+            }
+        }
         (b.model.columns, b.model.rows, b.model.key_image_size).hash(h);
         b.model.panel_size().hash(h);
         b.index.hash(h);
@@ -1727,6 +2001,186 @@ mod tests {
         }
     }
 
+    /// Two plain pictures, red and blue, for slideshow tests.
+    fn two_pictures() -> (std::path::PathBuf, Wallpaper, Wallpaper) {
+        let dir = std::env::temp_dir().join(format!("deckly-slides-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = |name: &str, rgb| {
+            let path = dir.join(name);
+            RgbaImage::from_pixel(480, 272, Rgba(rgb))
+                .save(&path)
+                .unwrap();
+            Wallpaper::new(path)
+        };
+        let red = save("red.png", [255, 0, 0, 255]);
+        let blue = save("blue.png", [0, 0, 255, 255]);
+        (dir, red, blue)
+    }
+
+    fn changing<'a>(
+        from: &'a Wallpaper,
+        to: &'a Wallpaper,
+        model: &'a DeviceModel,
+        index: u8,
+        transition: Transition,
+        progress: u16,
+    ) -> Option<Backdrop<'a>> {
+        Some(Backdrop {
+            change: Some(Change {
+                to,
+                transition,
+                progress,
+            }),
+            ..Backdrop::still(from, model, index)
+        })
+    }
+
+    #[test]
+    fn waves_turn_every_key_once_in_order() {
+        let (dir, red, blue) = two_pictures();
+        let r = Renderer::new();
+        for kind in [
+            deckly_core::DeviceKind::Mk2,
+            deckly_core::DeviceKind::Xl,
+            deckly_core::DeviceKind::Mini,
+        ] {
+            let model = DeviceModel::of(kind);
+            for transition in [Transition::Diagonal, Transition::Center] {
+                let hash = |index, progress| {
+                    r.key_hash_on(
+                        None,
+                        Live::default(),
+                        None,
+                        changing(&red, &blue, model, index, transition, progress),
+                    )
+                };
+                let still = |w, index| {
+                    r.key_hash_on(
+                        None,
+                        Live::default(),
+                        None,
+                        Some(Backdrop::still(w, model, index)),
+                    )
+                };
+                let mut turns = Vec::new();
+                for index in 0..model.key_count() {
+                    assert_eq!(hash(index, 0), still(&red, index));
+                    assert_eq!(hash(index, CHANGE_END), still(&blue, index));
+                    let steps: Vec<u64> = (0..=CHANGE_END)
+                        .step_by(10)
+                        .map(|p| hash(index, p))
+                        .collect();
+                    let changes = steps.windows(2).filter(|w| w[0] != w[1]).count();
+                    assert_eq!(changes, 1, "{kind:?} {transition:?} key {index}");
+                    turns.push(wave_turn(model, index, transition));
+                }
+                // The first key does not wait for the whole wave.
+                if transition == Transition::Diagonal {
+                    assert!(
+                        turns
+                            .windows(2)
+                            .take(usize::from(model.columns) - 1)
+                            .all(|w| w[0] < w[1])
+                    );
+                } else {
+                    assert!(turns.iter().all(|&t| t > 0 && t < CHANGE_END));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn wipes_push_and_fades_draw_both_pictures() {
+        let (dir, red, blue) = two_pictures();
+        let model = DeviceModel::of(deckly_core::DeviceKind::Mk2);
+        let last = model.columns - 1;
+        let mut r = Renderer::new();
+        let mut key = |index, transition, progress| {
+            r.render_on(
+                None,
+                72,
+                Live::default(),
+                None,
+                changing(&red, &blue, model, index, transition, progress),
+            )
+        };
+        let px = |img: &RgbaImage, x, y| img.get_pixel(x, y).0;
+        // Halfway through a wipe the left keys show the next picture and
+        // the right keys the one before.
+        assert_eq!(px(&key(0, Transition::Wipe, 500), 36, 36), [0, 0, 255, 255]);
+        assert_eq!(
+            px(&key(last, Transition::Wipe, 500), 36, 36),
+            [255, 0, 0, 255]
+        );
+        // The middle key holds the edge: blue on its left, red on its right.
+        let middle = key(2, Transition::Wipe, 500);
+        assert_eq!(px(&middle, 1, 36), [0, 0, 255, 255]);
+        assert_eq!(px(&middle, 70, 36), [255, 0, 0, 255]);
+        // A push moves the shown picture out to the left.
+        assert_eq!(px(&key(0, Transition::Push, 500), 36, 36), [255, 0, 0, 255]);
+        assert_eq!(
+            px(&key(last, Transition::Push, 500), 36, 36),
+            [0, 0, 255, 255]
+        );
+        // A fade mixes the two.
+        let [red_part, _, blue_part, alpha] = px(&key(4, Transition::Fade, 500), 36, 36);
+        assert!((100..=156).contains(&red_part) && (100..=156).contains(&blue_part));
+        assert_eq!(alpha, 255);
+        for transition in Transition::ALL {
+            for progress in [0, 1, 333, 999, CHANGE_END, u16::MAX] {
+                for index in 0..model.key_count() {
+                    let img = key(index, transition, progress);
+                    assert_eq!(img.dimensions(), (72, 72));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn opaque_key_pictures_hide_the_wallpaper_from_the_hash() {
+        let (dir, red, blue) = two_pictures();
+        let model = DeviceModel::of(deckly_core::DeviceKind::Mk2);
+        let save = |name: &str, alpha| {
+            let path = dir.join(name);
+            RgbaImage::from_pixel(72, 72, Rgba([9, 9, 9, alpha]))
+                .save(&path)
+                .unwrap();
+            let mut key = KeyConfig::new(actions::NEXT_PAGE, serde_json::json!({}));
+            key.image = Some(path);
+            key
+        };
+        let (solid, glass) = (save("solid.png", 255), save("glass.png", 128));
+        let mut r = Renderer::new();
+        for key in [&solid, &glass] {
+            r.render_on(Some(key), 72, Live::default(), None, None);
+        }
+        let on = |r: &Renderer, key, live, w| {
+            r.key_hash_on(Some(key), live, None, Some(Backdrop::still(w, model, 0)))
+        };
+        let live = Live::default();
+        assert_eq!(on(&r, &solid, live, &red), on(&r, &solid, live, &blue));
+        assert_ne!(on(&r, &glass, live, &red), on(&r, &glass, live, &blue));
+        // A held key drawn smaller shows the wallpaper around it.
+        let held = Live {
+            pressed: true,
+            ..live
+        };
+        assert_ne!(on(&r, &solid, held, &red), on(&r, &solid, held, &blue));
+        // The same pixels whether the wallpaper is drawn or skipped.
+        let drawn = r.render_on(Some(&solid), 72, live, None, None);
+        let skipped = r.render_on(
+            Some(&solid),
+            72,
+            live,
+            None,
+            Some(Backdrop::still(&red, model, 0)),
+        );
+        assert_eq!(drawn, skipped);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn confirmation_answers_keep_the_wallpaper_and_stay_readable() {
         let path = std::env::temp_dir().join(format!("deckly-wall-{}.png", uuid::Uuid::new_v4()));
@@ -1744,6 +2198,7 @@ mod tests {
         let model = DeviceModel::of(deckly_core::DeviceKind::Mk2);
         let backdrop = |index| {
             Some(Backdrop {
+                change: None,
                 wallpaper: &wall,
                 model,
                 index,
@@ -1790,6 +2245,7 @@ mod tests {
         let model = DeviceModel::of(deckly_core::DeviceKind::Mk2);
         let backdrop = |index| {
             Some(Backdrop {
+                change: None,
                 wallpaper: &wall,
                 model,
                 index,
@@ -1831,11 +2287,7 @@ mod tests {
             Some(&key),
             Live::default(),
             None,
-            Some(Backdrop {
-                wallpaper: &moved,
-                model,
-                index: 2,
-            }),
+            Some(Backdrop::still(&moved, model, 2)),
         );
         assert_ne!(moved_hash, first);
         // Device images keep their size and format.
@@ -1863,11 +2315,7 @@ mod tests {
         let wallpaper = Wallpaper::new(wall_path);
         let model = DeviceModel::of(deckly_core::DeviceKind::Mini);
         let size = model.key_image_size;
-        let backdrop = Some(Backdrop {
-            wallpaper: &wallpaper,
-            model,
-            index: 0,
-        });
+        let backdrop = Some(Backdrop::still(&wallpaper, model, 0));
         let mut r = Renderer::new();
         r.key_press.size = 60;
         let down = Live {
@@ -1936,11 +2384,7 @@ mod tests {
     fn a_missing_wallpaper_leaves_the_keys_as_they_were() {
         let wall = Wallpaper::new("does/not/exist.png".into());
         let model = DeviceModel::of(deckly_core::DeviceKind::Mk2);
-        let backdrop = Some(Backdrop {
-            wallpaper: &wall,
-            model,
-            index: 0,
-        });
+        let backdrop = Some(Backdrop::still(&wall, model, 0));
         let mut r = Renderer::new();
         let key = KeyConfig::new(actions::HOTKEY, json!({}));
         assert_eq!(

@@ -247,20 +247,20 @@ fn write_global_wallpaper(root: &Path, image: &RgbaImage) -> Result<PathBuf, Str
 /// Deletes the global wallpaper pictures other than `keep`, which the
 /// settings point at. Earlier choices are left behind when another picture
 /// is chosen or the wallpaper removed.
-pub fn prune_global_wallpapers(keep: Option<&Path>) {
+pub fn prune_global_wallpapers(keep: &[&Path]) {
     if let Some(root) = config_dir() {
         prune_wallpapers_in(&global_wallpaper_dir(&root), keep);
     }
 }
 
-fn prune_wallpapers_in(dir: &Path, keep: Option<&Path>) {
+fn prune_wallpapers_in(dir: &Path, keep: &[&Path]) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         let is_file = entry.file_type().is_ok_and(|t| t.is_file());
-        if is_file && keep.is_none_or(|keep| keep != path) {
+        if is_file && !keep.contains(&path.as_path()) {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -526,13 +526,17 @@ mod tests {
         let wide = RgbaImage::new(crate::render::MAX_WALLPAPER_SIDE + 1, 1);
         assert!(write_global_wallpaper(&root, &wide).is_err());
         assert!(write_global_wallpaper(&root, &RgbaImage::new(0, 0)).is_err());
-        prune_wallpapers_in(&dir, Some(&second));
+        let third = write_global_wallpaper(&root, &image).unwrap();
+        // Every picture of a slideshow stays.
+        prune_wallpapers_in(&dir, &[&second, &third]);
         assert!(!first.exists());
-        assert!(second.exists());
-        prune_wallpapers_in(&dir, None);
-        assert!(!second.exists());
+        assert!(second.exists() && third.exists());
+        prune_wallpapers_in(&dir, &[&third]);
+        assert!(!second.exists() && third.exists());
+        prune_wallpapers_in(&dir, &[]);
+        assert!(!third.exists());
         // A folder that is not there is not an error.
-        prune_wallpapers_in(&root.join("missing"), None);
+        prune_wallpapers_in(&root.join("missing"), &[]);
         let _ = std::fs::remove_dir_all(root);
     }
 

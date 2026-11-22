@@ -558,10 +558,124 @@ struct Link {
     members: HashMap<String, Shown>,
     /// The press owns its release, even if navigation changed the visible keys.
     held: HashMap<u8, KeyHit>,
-    /// When an animated key on it shows its next frame.
+    /// When an animated key or the wallpaper slideshow on it shows its
+    /// next frame.
     next_frame: Option<Instant>,
     /// Gestures of protected keys in progress.
     guard: protect::Guard<KeyHit>,
+    /// Where the slideshow of the wallpaper shown is.
+    show: Option<ShowClock>,
+}
+
+/// Frames per second of a slideshow transition at most. A transition is
+/// timed by the clock, so a slower device skips frames instead of falling
+/// behind: images queued for a key replace the ones not sent yet.
+const SLIDESHOW_FPS: u32 = 20;
+
+/// The clock of one device's wallpaper slideshow.
+#[derive(Clone, Copy, Debug)]
+struct ShowClock {
+    /// The slideshow it times, by hash; another one starts over.
+    id: u64,
+    /// When the first picture appeared, moved on by the time spent paused.
+    started: Instant,
+    /// Since when it stands still: the device sleeps or a confirmation
+    /// screen covers its keys.
+    paused: Option<Instant>,
+}
+
+/// What a slideshow shows at one moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShowMoment {
+    /// The picture shown, or the one a transition leaves.
+    slide: usize,
+    /// The picture a transition goes to, and how far it is in thousandths.
+    change: Option<(usize, u16)>,
+    /// How long until the next picture or frame.
+    next: Duration,
+}
+
+/// Where a slideshow of `count` pictures is `elapsed` after it started:
+/// each picture stays `interval`, then a transition of `duration` leads to
+/// the next one, and after the last one it starts over.
+fn show_moment(
+    count: usize,
+    interval: Duration,
+    duration: Duration,
+    elapsed: Duration,
+) -> ShowMoment {
+    let count = count.max(1) as u128;
+    let (stay, change) = (interval.as_millis().max(1), duration.as_millis().max(1));
+    let period = stay + change;
+    let at = elapsed.as_millis();
+    let (round, into) = (at / period, at % period);
+    let slide = (round % count) as usize;
+    let ms = |m: u128| Duration::from_millis(u64::try_from(m).unwrap_or(u64::MAX));
+    if into < stay {
+        return ShowMoment {
+            slide,
+            change: None,
+            next: ms(stay - into),
+        };
+    }
+    let done = into - stay;
+    let progress = (done * u128::from(render::CHANGE_END) / change) as u16;
+    let frame = 1000 / u128::from(SLIDESHOW_FPS);
+    ShowMoment {
+        slide,
+        change: Some((((round + 1) % count) as usize, progress)),
+        // The last frame lands right on the end of the transition.
+        next: ms(frame.min(change - done).max(1)),
+    }
+}
+
+impl ShowClock {
+    /// Where the slideshow of `wallpaper` is at `now`, keeping the clock in
+    /// `clock`. `None` for a wallpaper of one picture.
+    fn moment(
+        clock: &mut Option<Self>,
+        wallpaper: Option<&Wallpaper>,
+        paused: bool,
+        now: Instant,
+    ) -> Option<ShowMoment> {
+        let Some((wallpaper, show)) = wallpaper
+            .and_then(|w| Some((w, w.slideshow.as_ref().filter(|s| !s.slides.is_empty())?)))
+        else {
+            *clock = None;
+            return None;
+        };
+        let mut h = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(wallpaper, &mut h);
+        let id = std::hash::Hasher::finish(&h);
+        let clock = match clock {
+            Some(c) if c.id == id => c,
+            _ => clock.insert(Self {
+                id,
+                started: now,
+                paused: None,
+            }),
+        };
+        let at = match (paused, clock.paused) {
+            (true, Some(since)) => since,
+            (true, None) => {
+                clock.paused = Some(now);
+                now
+            }
+            (false, since) => {
+                if let Some(since) = since {
+                    clock.started += now.saturating_duration_since(since);
+                    clock.paused = None;
+                }
+                now
+            }
+        };
+        Some(show_moment(
+            wallpaper.slide_count(),
+            Duration::from_secs(u64::from(show.interval)),
+            Duration::from_millis(u64::from(show.duration)),
+            at.saturating_duration_since(clock.started),
+        ))
+    }
 }
 
 /// A plugin key as its plugin last heard of it.
@@ -589,6 +703,7 @@ impl Link {
             members: HashMap::new(),
             held: HashMap::new(),
             next_frame: None,
+            show: None,
             guard: protect::Guard::new(protect::Board {
                 keys: info.model.key_count(),
                 columns: info.model.columns,
@@ -1881,6 +1996,14 @@ fn refresh(
     links: &mut Links,
     host: Option<&Host>,
 ) {
+    // A screensaver keeps the keys from being refreshed; its slideshow
+    // stands still from now on.
+    let now = Instant::now();
+    for link in links.values_mut().filter(|l| l.asleep) {
+        if let Some(clock) = &mut link.show {
+            clock.paused.get_or_insert(now);
+        }
+    }
     // Collect the work under the lock, render without it.
     let mut work: Vec<DeviceWork> = Vec::new();
     {
@@ -1978,17 +2101,43 @@ fn refresh(
             update_members(host, link, members);
         }
         let count = link.model.key_count();
+        // The slideshow stands still while the device sleeps or a
+        // confirmation screen covers it.
+        let moment = ShowClock::moment(
+            &mut link.show,
+            wallpaper.as_ref(),
+            link.asleep || covered,
+            now,
+        );
+        let (shown, change) = match (&wallpaper, moment) {
+            (Some(w), Some(m)) => {
+                if !(link.asleep || covered) {
+                    let next = now + m.next;
+                    link.next_frame = Some(link.next_frame.map_or(next, |n| n.min(next)));
+                }
+                let change = m.change.and_then(|(to, progress)| {
+                    Some(render::Change {
+                        to: w.slide(to)?,
+                        transition: w.slideshow.as_ref()?.transition,
+                        progress,
+                    })
+                });
+                (w.slide(m.slide), change)
+            }
+            (w, _) => (w.as_ref(), None),
+        };
         for (index, view) in keys.into_iter().enumerate() {
             if !covered && let Some(slot) = link.shown.get_mut(index) {
                 update_shown(host, slot, view.shown);
             }
             // index < key_count, which is a u8.
             let physical = link.orientation.map_key(index as u8, count);
-            let backdrop = wallpaper.as_ref().map(|wallpaper| render::Backdrop {
+            let backdrop = shown.map(|wallpaper| render::Backdrop {
                 wallpaper,
                 model: link.model,
                 // index < key_count, which is a u8.
                 index: index as u8,
+                change,
             });
             if let Some(cover) = view.cover {
                 // Blank keys show the wallpaper as an empty key does.
@@ -3170,6 +3319,112 @@ mod tests {
         });
         deck.wake(Duration::from_secs(5));
         assert!(deck.ran().is_empty());
+    }
+
+    #[test]
+    fn a_slideshow_shows_each_picture_then_a_transition_to_the_next() {
+        let (stay, change) = (Duration::from_secs(10), Duration::from_millis(1000));
+        let at = |ms| show_moment(3, stay, change, Duration::from_millis(ms));
+        assert_eq!(
+            at(0),
+            ShowMoment {
+                slide: 0,
+                change: None,
+                next: stay
+            }
+        );
+        assert_eq!(at(9_000).next, Duration::from_secs(1));
+        let mid = at(10_500);
+        assert_eq!((mid.slide, mid.change), (0, Some((1, 500))));
+        // Frames come at the frame rate, the last one right at the end.
+        assert_eq!(
+            mid.next,
+            Duration::from_millis(1000 / u64::from(SLIDESHOW_FPS))
+        );
+        assert_eq!(at(10_990).next, Duration::from_millis(10));
+        assert_eq!((at(11_000).slide, at(11_000).change), (1, None));
+        // After the last picture it starts over.
+        let back = at(32_500);
+        assert_eq!((back.slide, back.change), (2, Some((0, 500))));
+        assert_eq!(at(33_000).slide, 0);
+        // Nothing to show and nothing odd: no division by zero, no panic.
+        let zero = show_moment(0, Duration::ZERO, Duration::ZERO, Duration::from_secs(5));
+        assert_eq!(zero.slide, 0);
+        assert!(zero.next > Duration::ZERO);
+    }
+
+    #[test]
+    fn a_paused_slideshow_stands_still_and_goes_on_where_it_stopped() {
+        let mut wall = Wallpaper::new("a.png".into());
+        wall.push_slide(Wallpaper::new("b.png".into()));
+        let show = wall.slideshow.as_mut().unwrap();
+        show.interval = 10;
+        let start = Instant::now();
+        let s = Duration::from_secs;
+        let mut clock = None;
+        let at = |clock: &mut Option<ShowClock>, paused, t| {
+            ShowClock::moment(clock, Some(&wall), paused, start + t).unwrap()
+        };
+        assert_eq!(at(&mut clock, false, s(0)).slide, 0);
+        // Asleep from 5 s to 105 s.
+        assert_eq!(at(&mut clock, true, s(5)).next, s(5));
+        assert_eq!(at(&mut clock, true, s(100)).slide, 0);
+        let woke = at(&mut clock, false, s(105));
+        assert_eq!((woke.slide, woke.next), (0, s(5)));
+        assert_eq!(at(&mut clock, false, s(116)).slide, 1);
+        // Another slideshow starts from its first picture.
+        let mut other = wall.clone();
+        other.push_slide(Wallpaper::new("c.png".into()));
+        let m = ShowClock::moment(&mut clock, Some(&other), false, start + s(117)).unwrap();
+        assert_eq!((m.slide, m.next), (0, s(10)));
+        // One picture is no slideshow.
+        let one = Wallpaper::new("a.png".into());
+        assert!(ShowClock::moment(&mut clock, Some(&one), false, start).is_none());
+        assert!(clock.is_none());
+    }
+
+    #[test]
+    fn a_slideshow_wakes_the_loop_only_when_it_has_something_to_show() {
+        let dir = std::env::temp_dir().join(format!("deckly-show-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let picture = |name: &str, rgb| {
+            let path = dir.join(name);
+            RgbaImage::from_pixel(400, 300, image::Rgba(rgb))
+                .save(&path)
+                .unwrap();
+            path
+        };
+        let mut wall = Wallpaper::new(picture("a.png", [200, 30, 30, 255]));
+        wall.push_slide(Wallpaper::new(picture("b.png", [30, 30, 200, 255])));
+        let mut key = KeyConfig::new(actions::NEXT_PAGE, json!({}));
+        key.image = Some(picture("key.png", [10, 200, 10, 255]));
+        let mut deck = Deck::new(key);
+        lock(&deck.state).profiles[0].wallpaper = Some(wall);
+        // The first refresh reads the key's picture and learns it is opaque.
+        deck.refresh();
+        deck.refresh();
+        let before = deck.links[&1].sent.clone();
+        // Between transitions the loop sleeps until the next picture.
+        let next = deck.links[&1].next_frame.unwrap();
+        let wait = next.saturating_duration_since(Instant::now());
+        assert!(
+            wait > Duration::from_secs(25) && wait <= Duration::from_secs(30),
+            "{wait:?}"
+        );
+        // On the next picture the empty keys change; the key whose
+        // picture covers the wallpaper is not sent again.
+        let clock = deck.links.get_mut(&1).unwrap().show.as_mut().unwrap();
+        clock.started = clock.started.checked_sub(Duration::from_secs(31)).unwrap();
+        deck.refresh();
+        let after = deck.links[&1].sent.clone();
+        assert_eq!(after[0], before[0]);
+        assert!((1..15).all(|i| after[i] != before[i]));
+        // A sleeping device does not wake the loop for its slideshow.
+        deck.links.get_mut(&1).unwrap().asleep = true;
+        deck.refresh();
+        assert_eq!(deck.links[&1].next_frame, None);
+        assert!(deck.links[&1].show.unwrap().paused.is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

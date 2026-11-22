@@ -400,6 +400,9 @@ impl Settings {
         {
             self.wallpaper = None;
         }
+        if let Some(wallpaper) = &mut self.wallpaper {
+            wallpaper.drop_long_slides(MAX_PATH_BYTES);
+        }
         Wallpaper::sanitize_optional(&mut self.wallpaper);
     }
 }
@@ -544,6 +547,24 @@ mod tests {
         assert_eq!(marks.failure.size, crate::MarkStyle::MAX_SIZE);
         assert_eq!(marks.failure.duration_ms, crate::MarkStyle::MIN_DURATION_MS);
         assert_eq!(marks.folder_exit.size, crate::RingStyle::MAX_SIZE);
+    }
+
+    #[test]
+    fn the_global_slideshow_round_trips_and_drops_long_paths() {
+        let mut s = Settings::default();
+        let mut w = Wallpaper::new("wallpapers/a.png".into());
+        w.push_slide(Wallpaper::new("wallpapers/b.png".into()));
+        s.wallpaper = Some(w);
+        let back = Settings::from_json(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        let long = "a".repeat(MAX_PATH_BYTES + 1);
+        let s = Settings::from_json(&format!(
+            r#"{{"wallpaper":{{"image":"w.png","slideshow":{{"slides":[{{"image":"{long}"}},{{"image":"ok.png"}}]}}}}}}"#
+        ))
+        .unwrap();
+        let w = s.wallpaper.unwrap();
+        assert_eq!(w.slide_count(), 2);
+        assert_eq!(w.slide(1).unwrap().image, std::path::Path::new("ok.png"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub use device::{
 pub use feedback::{FeedbackMarks, MARK_ICONS, MarkStyle, RingStyle};
 pub use profile::{
     ActionDelays, AppRule, AutoExit, KeyConfig, Page, PinError, Profile, ProfileError, Protection,
-    ShownKey, TitleAlign, TitleStyle, Wallpaper, WallpaperChoice, WallpaperLevel,
-    resolve_wallpaper,
+    ShownKey, Slideshow, TitleAlign, TitleStyle, Transition, Wallpaper, WallpaperChoice,
+    WallpaperLevel, resolve_wallpaper,
 };
 pub use settings::{DeviceSettings, KeyPress, LockLook, Orientation, Settings, Turn};

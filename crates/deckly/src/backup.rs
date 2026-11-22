@@ -10,7 +10,7 @@ use crate::runtime::{self, Msg, Shared};
 use crate::store;
 use crate::transfer::{Progress, Summary, clean_file_name, list_files, safe_name};
 use deckly_core::profile::MAX_FILE_BYTES;
-use deckly_core::{Profile, Settings};
+use deckly_core::{Profile, Settings, Wallpaper};
 use deckly_plugin_host::Host;
 use deckly_plugin_host::manifest::valid_uuid;
 use serde_json::{Value, json};
@@ -225,47 +225,56 @@ fn unpack_settings(backup: &mut Reader, root: &Path) -> Result<Option<Settings>,
     Ok(Some(settings))
 }
 
-/// Puts the global wallpaper's picture in the backup and points the
-/// settings at it there. A picture that cannot be read leaves the backup
-/// without a global wallpaper; returns false then.
+/// Puts the global wallpaper's pictures in the backup and points the
+/// settings at them there. A picture that cannot be read is left out of
+/// the backup, and out of its slideshow; returns false then.
 fn pack_global_wallpaper(zip: &mut Zip, settings: &mut Settings) -> bool {
-    let Some(mut wallpaper) = settings.wallpaper.take() else {
-        return true;
-    };
-    let Some(name) = wallpaper
-        .image
-        .file_name()
-        .and_then(|file| file.to_str())
-        .and_then(clean_file_name)
-        .map(|file| format!("{GLOBAL_WALLPAPER_FOLDER}{file}"))
-    else {
-        return false;
-    };
-    if add_file(zip, &wallpaper.image, &name).is_err() {
-        return false;
-    }
-    wallpaper.image = name.into();
-    settings.wallpaper = Some(wallpaper);
-    true
+    let mut packed = std::collections::HashSet::new();
+    let mut all = true;
+    Wallpaper::visit_picture(&mut settings.wallpaper, &mut |picture| {
+        let Some(path) = picture.take() else {
+            return;
+        };
+        let Some(name) = path
+            .file_name()
+            .and_then(|file| file.to_str())
+            .and_then(clean_file_name)
+            .map(|file| format!("{GLOBAL_WALLPAPER_FOLDER}{file}"))
+        else {
+            all = false;
+            return;
+        };
+        // Two pictures of a slideshow may be one file.
+        if !packed.contains(&name) {
+            if add_file(zip, &path, &name).is_err() {
+                all = false;
+                return;
+            }
+            packed.insert(name.clone());
+        }
+        *picture = Some(name.into());
+    });
+    all
 }
 
-/// Unpacks the global wallpaper of restored settings into Deckly's
-/// wallpapers folder. Settings may only point at a picture in the backup's
-/// own wallpapers folder; anything else drops the global wallpaper.
+/// Unpacks the global wallpaper's pictures of restored settings into
+/// Deckly's wallpapers folder. Settings may only point at pictures in the
+/// backup's own wallpapers folder; any other picture is dropped.
 fn unpack_global_wallpaper(settings: &mut Settings, backup: &mut Reader, root: &Path) {
-    settings.wallpaper = settings.wallpaper.take().and_then(|mut wallpaper| {
-        let name = wallpaper.image.to_str()?.to_owned();
-        let file = name.strip_prefix(GLOBAL_WALLPAPER_FOLDER)?;
-        if file.contains('/')
-            || clean_file_name(file).as_deref() != Some(file)
-            || !backup.has(&name)
-        {
-            return None;
-        }
-        let to = store::global_wallpaper_dir(root).join(file);
-        backup.unpack(&name, &to).ok()?;
-        wallpaper.image = to;
-        Some(wallpaper)
+    Wallpaper::visit_picture(&mut settings.wallpaper, &mut |picture| {
+        *picture = picture.take().and_then(|path| {
+            let name = path.to_str()?.to_owned();
+            let file = name.strip_prefix(GLOBAL_WALLPAPER_FOLDER)?;
+            if file.contains('/')
+                || clean_file_name(file).as_deref() != Some(file)
+                || !backup.has(&name)
+            {
+                return None;
+            }
+            let to = store::global_wallpaper_dir(root).join(file);
+            backup.unpack(&name, &to).ok()?;
+            Some(to)
+        });
     });
 }
 
@@ -614,6 +623,55 @@ mod tests {
             assert_eq!(keys[&key].image, None);
         }
         assert!(!dir.join("evil.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_picture_of_a_global_slideshow_goes_into_the_backup() {
+        let dir = temp("global-slideshow");
+        let write = |name: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, name.as_bytes()).unwrap();
+            path
+        };
+        let (a, b) = (write("a.png"), write("b.png"));
+        let mut wall = Wallpaper::new(a.clone());
+        wall.push_slide(Wallpaper::new(b.clone()));
+        // The same file twice, and one that is gone.
+        wall.push_slide(Wallpaper::new(a.clone()));
+        wall.push_slide(Wallpaper::new(dir.join("gone.png")));
+        let mut settings = Settings {
+            wallpaper: Some(wall),
+            ..Settings::default()
+        };
+        let file = dir.join("s.decklyBackup");
+        let mut zip = writer(&file);
+        assert!(!pack_global_wallpaper(&mut zip, &mut settings));
+        zip.finish().unwrap().flush().unwrap();
+        let packed = settings.wallpaper.clone().unwrap();
+        assert_eq!(packed.slide_count(), 3);
+        assert_eq!(
+            packed.slide(1).unwrap().image,
+            PathBuf::from("wallpapers/b.png")
+        );
+
+        let root = dir.join("root");
+        let mut backup = Reader::open(&file).unwrap();
+        unpack_global_wallpaper(&mut settings, &mut backup, &root);
+        let restored = settings.wallpaper.unwrap();
+        let images: Vec<PathBuf> = (0..restored.slide_count())
+            .map(|i| restored.slide(i).unwrap().image.clone())
+            .collect();
+        let folder = root.join("wallpapers");
+        assert_eq!(
+            images,
+            [
+                folder.join("a.png"),
+                folder.join("b.png"),
+                folder.join("a.png")
+            ]
+        );
+        assert_eq!(std::fs::read(&images[1]).unwrap(), b"b.png");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

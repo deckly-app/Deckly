@@ -1,12 +1,15 @@
 //! The Wallpaper window: choose a picture for the profile, page or folder
 //! and place it across the keys by dragging and zooming
-//! (docs/clean-room/2026-11-04-key-wallpaper.md).
+//! (docs/clean-room/2026-11-04-key-wallpaper.md), or several pictures
+//! that follow each other as a slideshow
+//! (docs/clean-room/2026-11-22-wallpaper-slideshow.md).
 
 use crate::render::{self, Renderer};
 use crate::store;
 use crate::theme::*;
 use deckly_core::{
-    DeviceModel, Page, Wallpaper, WallpaperChoice, WallpaperLevel, resolve_wallpaper,
+    DeviceModel, Page, Slideshow, Transition, Wallpaper, WallpaperChoice, WallpaperLevel,
+    resolve_wallpaper,
 };
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CornerRadius, Rect, RichText, Sense, Stroke, TextureHandle,
@@ -47,6 +50,11 @@ pub struct WallpaperEditor {
     pub page: String,
     editing_profile: bool,
     job: Option<Receiver<Result<PathBuf, String>>>,
+    /// The picture being read joins the slideshow instead of replacing the
+    /// one selected.
+    adding: bool,
+    /// The slideshow picture shown and edited, 0 for the wallpaper's own.
+    slide: usize,
     error: Option<String>,
     preview: Option<(u64, TextureHandle)>,
     /// Counts presses, so that each drag or slide is one undo step.
@@ -61,6 +69,8 @@ impl WallpaperEditor {
             page: page.to_owned(),
             editing_profile: false,
             job: None,
+            adding: false,
+            slide: 0,
             error: None,
             preview: None,
             gesture: 0,
@@ -94,12 +104,12 @@ impl WallpaperEditor {
         if ctx.input(|i| i.pointer.any_pressed()) {
             self.gesture = self.gesture.wrapping_add(1);
         }
-        if let Some(wallpaper) = self.receive() {
+        if let Some(path) = self.receive() {
             if self.editing_profile {
-                *profile_wallpaper = Some(wallpaper);
+                self.take(profile_wallpaper, path);
                 *profile_disabled = false;
             } else {
-                page.wallpaper = Some(wallpaper);
+                self.take(&mut page.wallpaper, path);
                 page.wallpaper_disabled = false;
             }
         }
@@ -115,8 +125,12 @@ impl WallpaperEditor {
                 let busy = self.job.is_some();
                 ui.add_enabled_ui(!busy, |ui| {
                     ui.horizontal(|ui| {
+                        let was = self.editing_profile;
                         ui.selectable_value(&mut self.editing_profile, false, scope);
                         ui.selectable_value(&mut self.editing_profile, true, "Profile");
+                        if was != self.editing_profile {
+                            self.slide = 0;
+                        }
                     });
                 });
                 let profile_choice =
@@ -130,11 +144,7 @@ impl WallpaperEditor {
                 };
                 let level = shown.as_ref().map(|(_, level)| *level);
                 let shown = shown.map(|(w, _)| w);
-                self.preview(ui, shown.as_ref(), wallpaper.as_mut(), model, renderer);
-                ui.add_space(8.0);
-                if let Some(wallpaper) = wallpaper {
-                    zoom_row(ui, wallpaper);
-                }
+                self.edit(ui, ctx, shown.as_ref(), wallpaper, model, renderer, busy);
                 let status = if self.editing_profile {
                     profile_status(*profile_disabled, level)
                 } else {
@@ -196,8 +206,8 @@ impl WallpaperEditor {
         model: &mut &'static DeviceModel,
         renderer: &mut Renderer,
     ) -> bool {
-        if let Some(chosen) = self.receive() {
-            *wallpaper = Some(chosen);
+        if let Some(path) = self.receive() {
+            self.take(wallpaper, path);
         }
         let mut open = true;
         let mut close = false;
@@ -239,11 +249,7 @@ impl WallpaperEditor {
                 });
                 ui.add_space(4.0);
                 let shown = wallpaper.clone();
-                self.preview(ui, shown.as_ref(), wallpaper.as_mut(), model, renderer);
-                ui.add_space(8.0);
-                if let Some(wallpaper) = wallpaper.as_mut() {
-                    zoom_row(ui, wallpaper);
-                }
+                self.edit(ui, ctx, shown.as_ref(), wallpaper, model, renderer, busy);
                 let status = if wallpaper.is_some() {
                     "Behind the keys wherever a profile, page or folder does not use its own \
                      wallpaper or turn it off."
@@ -263,6 +269,7 @@ impl WallpaperEditor {
                         .clicked()
                     {
                         *wallpaper = None;
+                        self.slide = 0;
                         self.error = None;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -271,6 +278,134 @@ impl WallpaperEditor {
                 });
             });
         open && !close
+    }
+
+    /// The preview of the selected picture, its zoom, and the slideshow.
+    /// `shown` is what the keys show, `wallpaper` the level's own, if any.
+    #[allow(clippy::too_many_arguments)]
+    fn edit(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        shown: Option<&Wallpaper>,
+        wallpaper: &mut Option<Wallpaper>,
+        model: &DeviceModel,
+        renderer: &mut Renderer,
+        busy: bool,
+    ) {
+        let count = wallpaper.as_ref().map_or(1, Wallpaper::slide_count);
+        self.slide = self.slide.min(count - 1);
+        // An inherited wallpaper shows its first picture.
+        let picture = match wallpaper {
+            Some(own) => own.slide(self.slide).cloned(),
+            None => shown.cloned(),
+        };
+        let editable = wallpaper.as_mut().and_then(|w| w.slide_mut(self.slide));
+        self.preview(ui, picture.as_ref(), editable, model, renderer);
+        ui.add_space(8.0);
+        if let Some(wallpaper) = wallpaper {
+            if let Some(slide) = wallpaper.slide_mut(self.slide) {
+                zoom_row(ui, slide);
+            }
+            ui.add_space(4.0);
+            self.slides_row(ui, ctx, wallpaper, busy);
+            if let Some(show) = &mut wallpaper.slideshow {
+                slideshow_rows(ui, show);
+            }
+            ui.add_space(4.0);
+        }
+    }
+
+    /// The pictures of the slideshow: pick one to edit, move it, take it
+    /// out, or add another.
+    fn slides_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        wallpaper: &mut Wallpaper,
+        busy: bool,
+    ) {
+        let count = wallpaper.slide_count();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Pictures").color(TEXT_DIM));
+            for i in 0..count {
+                let name = wallpaper
+                    .slide(i)
+                    .and_then(|w| w.image.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if ui
+                    .selectable_label(self.slide == i, format!("{}", i + 1))
+                    .on_hover_text(name)
+                    .clicked()
+                {
+                    self.slide = i;
+                }
+            }
+            ui.add_enabled_ui(!busy, |ui| {
+                let at = self.slide;
+                if ui
+                    .add_enabled(at > 0, egui::Button::new(icon::CARET_LEFT))
+                    .on_hover_text("Show earlier")
+                    .clicked()
+                {
+                    wallpaper.swap_slides(at, at - 1);
+                    self.slide = at - 1;
+                }
+                if ui
+                    .add_enabled(at + 1 < count, egui::Button::new(icon::CARET_RIGHT))
+                    .on_hover_text("Show later")
+                    .clicked()
+                {
+                    wallpaper.swap_slides(at, at + 1);
+                    self.slide = at + 1;
+                }
+                if ui
+                    .add_enabled(count > 1, egui::Button::new(icon::MINUS))
+                    .on_hover_text("Take this picture out of the slideshow")
+                    .clicked()
+                {
+                    wallpaper.remove_slide(at);
+                    self.slide = at.min(wallpaper.slide_count() - 1);
+                }
+                let full = count >= Slideshow::MAX_PICTURES;
+                let add = ui
+                    .add_enabled(!full, egui::Button::new(format!("{}  Add…", icon::PLUS)))
+                    .on_hover_text("Add a picture: the wallpaper becomes a slideshow")
+                    .on_disabled_hover_text(format!(
+                        "A slideshow holds up to {} pictures",
+                        Slideshow::MAX_PICTURES
+                    ))
+                    .clicked();
+                if add {
+                    self.choose(ctx, true);
+                }
+            });
+        });
+    }
+
+    /// Puts a picture just read where the user asked for it: into the
+    /// slideshow, in place of the selected picture, or as a new wallpaper.
+    fn take(&mut self, wallpaper: &mut Option<Wallpaper>, path: PathBuf) {
+        let chosen = Wallpaper::new(path);
+        match wallpaper {
+            Some(w) if self.adding => {
+                if w.push_slide(chosen) {
+                    self.slide = w.slide_count() - 1;
+                }
+            }
+            Some(w) => {
+                if let Some(slide) = w.slide_mut(self.slide) {
+                    (slide.image, slide.zoom, slide.x, slide.y) =
+                        (chosen.image, chosen.zoom, chosen.x, chosen.y);
+                }
+            }
+            None => {
+                *wallpaper = Some(chosen);
+                self.slide = 0;
+            }
+        }
+        self.adding = false;
     }
 
     fn error_row(&self, ui: &mut egui::Ui) {
@@ -287,7 +422,7 @@ impl WallpaperEditor {
             )
             .clicked();
         if choose {
-            self.choose(ctx);
+            self.choose(ctx, false);
         }
         if busy {
             ui.spinner();
@@ -402,7 +537,7 @@ impl WallpaperEditor {
         }
     }
 
-    fn choose(&mut self, ctx: &egui::Context) {
+    fn choose(&mut self, ctx: &egui::Context, adding: bool) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Images",
@@ -432,13 +567,14 @@ impl WallpaperEditor {
         match spawned {
             Ok(_) => {
                 self.job = Some(rx);
+                self.adding = adding;
                 self.error = None;
             }
             Err(e) => self.error = Some(format!("Cannot read the picture: {e}")),
         }
     }
 
-    fn receive(&mut self) -> Option<Wallpaper> {
+    fn receive(&mut self) -> Option<PathBuf> {
         let job = self.job.as_ref()?;
         let result = match job.try_recv() {
             Ok(result) => result,
@@ -449,7 +585,7 @@ impl WallpaperEditor {
         match result {
             Ok(path) => {
                 self.error = None;
-                Some(Wallpaper::new(path))
+                Some(path)
             }
             Err(e) => {
                 self.error = Some(format!("Cannot use this picture: {e}"));
@@ -493,6 +629,99 @@ fn zoom_row(ui: &mut egui::Ui, wallpaper: &mut Wallpaper) {
         )
         .color(TEXT_FAINT),
     );
+}
+
+/// How a slideshow moves on: its transition, and how long pictures and
+/// transitions last.
+fn slideshow_rows(ui: &mut egui::Ui, show: &mut Slideshow) {
+    egui::Grid::new("slideshow")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label(RichText::new("Transition").color(TEXT_DIM));
+            egui::ComboBox::from_id_salt("slideshow-transition")
+                .selected_text(show.transition.label())
+                .show_ui(ui, |ui| {
+                    for t in Transition::ALL {
+                        ui.selectable_value(&mut show.transition, t, t.label())
+                            .on_hover_text(transition_hint(t));
+                    }
+                });
+            ui.end_row();
+            ui.label(RichText::new("Each picture").color(TEXT_DIM));
+            ui.add(
+                egui::DragValue::new(&mut show.interval)
+                    .range(Slideshow::MIN_INTERVAL..=Slideshow::MAX_INTERVAL)
+                    .speed(1.0)
+                    .custom_formatter(|s, _| duration_text(s as u32))
+                    .custom_parser(parse_seconds),
+            );
+            ui.end_row();
+            ui.label(RichText::new("Transition time").color(TEXT_DIM));
+            ui.add(
+                egui::Slider::new(
+                    &mut show.duration,
+                    Slideshow::MIN_DURATION..=Slideshow::MAX_DURATION,
+                )
+                .step_by(100.0)
+                .custom_formatter(|ms, _| format!("{:.1} s", ms / 1000.0))
+                .custom_parser(|text| parse_seconds(text).map(|s| s * 1000.0)),
+            );
+            ui.end_row();
+        });
+    ui.label(RichText::new(transition_hint(show.transition)).color(TEXT_FAINT));
+}
+
+fn transition_hint(transition: Transition) -> &'static str {
+    match transition {
+        Transition::Diagonal => {
+            "Keys turn to the next picture one after another, corner to corner."
+        }
+        Transition::Center => "Keys turn to the next picture from the middle outwards.",
+        Transition::Wipe => "An edge sweeps across the keys and uncovers the next picture.",
+        Transition::Push => "The next picture slides in and pushes the shown one away.",
+        Transition::Fade => "The next picture fades in over the shown one.",
+    }
+}
+
+/// Seconds as the slideshow shows them: "45 s", "5 min", "1 h 30 min".
+fn duration_text(seconds: u32) -> String {
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    match (h, m, s) {
+        (0, 0, s) => format!("{s} s"),
+        (0, m, 0) => format!("{m} min"),
+        (0, m, s) => format!("{m} min {s} s"),
+        (h, 0, 0) => format!("{h} h"),
+        (h, m, _) => format!("{h} h {m} min"),
+    }
+}
+
+/// Reads "90", "90 s", "5 min", "1.5 h" or "1 h 30 min" as seconds.
+fn parse_seconds(text: &str) -> Option<f64> {
+    let mut total = 0.0;
+    let mut number: Option<f64> = None;
+    let mut parts = text.split_whitespace().flat_map(|w| {
+        // "5min" reads as "5 min".
+        let split = w.find(|c: char| c.is_alphabetic()).unwrap_or(w.len());
+        [&w[..split], &w[split..]]
+    });
+    for part in parts.by_ref().filter(|p| !p.is_empty()) {
+        if let Ok(n) = part.replace(',', ".").parse::<f64>() {
+            if number.replace(n).is_some() {
+                return None;
+            }
+            continue;
+        }
+        let unit = match part.to_lowercase().as_str() {
+            "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+            "h" | "hr" | "hour" | "hours" => 3600.0,
+            _ => return None,
+        };
+        total += number.take()? * unit;
+    }
+    let total = total + number.unwrap_or(0.0);
+    (total.is_finite() && total >= 0.0).then_some(total)
 }
 
 /// What the Profile tab says about the profile's wallpaper.
@@ -590,6 +819,46 @@ fn shade_outside(painter: &egui::Painter, panel: Rect, keys: &[Rect]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slideshow_times_read_and_print_in_plain_units() {
+        assert_eq!(duration_text(45), "45 s");
+        assert_eq!(duration_text(300), "5 min");
+        assert_eq!(duration_text(90), "1 min 30 s");
+        assert_eq!(duration_text(5400), "1 h 30 min");
+        assert_eq!(duration_text(86400), "24 h");
+        assert_eq!(parse_seconds("90"), Some(90.0));
+        assert_eq!(parse_seconds("1 min 30 s"), Some(90.0));
+        assert_eq!(parse_seconds("5min"), Some(300.0));
+        assert_eq!(parse_seconds("1,5 h"), Some(5400.0));
+        assert_eq!(parse_seconds("1.5"), Some(1.5));
+        assert_eq!(parse_seconds("soon"), None);
+        assert_eq!(parse_seconds("1 2"), None);
+        assert_eq!(parse_seconds("min"), None);
+        assert_eq!(parse_seconds("-5"), None);
+    }
+
+    #[test]
+    fn a_picture_read_joins_or_replaces_as_asked() {
+        let mut editor = WallpaperEditor::global();
+        let mut wall = None;
+        editor.take(&mut wall, "a.png".into());
+        editor.adding = true;
+        editor.take(&mut wall, "b.png".into());
+        let w = wall.as_ref().unwrap();
+        assert_eq!((w.slide_count(), editor.slide), (2, 1));
+        // Choosing a picture again replaces the selected one only.
+        wall.as_mut().unwrap().slide_mut(1).unwrap().zoom = 300;
+        editor.take(&mut wall, "c.png".into());
+        let w = wall.unwrap();
+        assert_eq!(w.image, PathBuf::from("a.png"));
+        let second = w.slide(1).unwrap();
+        assert_eq!(
+            (second.image.as_path(), second.zoom),
+            (std::path::Path::new("c.png"), 100)
+        );
+        assert!(w.slideshow.is_some());
+    }
 
     #[test]
     fn the_view_is_brought_back_inside_the_picture() {

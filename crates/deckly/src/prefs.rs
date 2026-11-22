@@ -2344,16 +2344,24 @@ fn key_preview(
 /// Puts a new global wallpaper in place and on the devices. A saved change
 /// of picture deletes the pictures chosen before.
 fn set_global_wallpaper(env: &mut Env<'_>, wallpaper: Option<Wallpaper>, save: bool) {
+    let pictures = |w: Option<&Wallpaper>| -> Vec<PathBuf> {
+        w.map(|w| {
+            (0..w.slide_count())
+                .filter_map(|i| Some(w.slide(i)?.image.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+    };
     let mut s = runtime::lock(env.state);
-    let new_picture =
-        s.settings.wallpaper.as_ref().map(|w| &w.image) != wallpaper.as_ref().map(|w| &w.image);
+    let kept = pictures(wallpaper.as_ref());
+    let new_picture = pictures(s.settings.wallpaper.as_ref()) != kept;
     s.settings.wallpaper = wallpaper;
     if save {
         match store::save_settings(&s.settings) {
             Ok(()) if new_picture => {
-                store::prune_global_wallpapers(
-                    s.settings.wallpaper.as_ref().map(|w| w.image.as_path()),
-                );
+                // Every picture of the slideshow stays.
+                let keep: Vec<&Path> = kept.iter().map(PathBuf::as_path).collect();
+                store::prune_global_wallpapers(&keep);
             }
             Ok(()) => {}
             Err(e) => s.notify(format!("Cannot save settings: {e}")),
