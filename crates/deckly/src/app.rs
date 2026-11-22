@@ -214,6 +214,20 @@ enum DragPayload {
     Member(usize),
 }
 
+/// The side of the key image in the drag preview, in points.
+const DRAG_ICON: f32 = 36.0;
+
+/// What the drag preview under the pointer shows, taken when a drag starts.
+enum DragLook {
+    /// A key's icon, without its title or wallpaper.
+    Key(TextureHandle),
+    /// A Multi Action step: its plugin image, or its glyph.
+    Member {
+        image: Option<egui::TextureId>,
+        glyph: &'static str,
+    },
+}
+
 enum KeyCommand {
     Copy(u8),
     /// Copy the key, then take it off its page or folder.
@@ -310,6 +324,8 @@ pub struct App {
     selected_device: Option<String>,
     offline_profile: Option<String>,
     selected_key: Option<u8>,
+    /// How the key or Multi Action step being dragged looks.
+    drag_look: Option<DragLook>,
     /// The page chip a drag rests on, and since when: after a moment the
     /// page opens, so the drag can end on one of its keys.
     page_hover: Option<(usize, Instant)>,
@@ -402,6 +418,7 @@ impl App {
             selected_device: None,
             offline_profile: None,
             selected_key: None,
+            drag_look: None,
             page_hover: None,
             pinned_view: None,
             group: None,
@@ -617,6 +634,53 @@ impl App {
         let id = tex.id();
         self.textures.insert((hash, px), tex);
         id
+    }
+
+    /// Draws what is being dragged under the pointer: a key's own image, or
+    /// the icon of an action or Multi Action step.
+    fn drag_preview(&mut self, ctx: &egui::Context) {
+        let Some(payload) = egui::DragAndDrop::payload::<DragPayload>(ctx) else {
+            self.drag_look = None;
+            return;
+        };
+        let Some(pos) = ctx.pointer_interact_pos() else {
+            return;
+        };
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-preview"));
+        let p = ctx.layer_painter(layer);
+        let look = match (&*payload, &self.drag_look) {
+            (DragPayload::Key { .. }, Some(DragLook::Key(image))) => {
+                let r = Rect::from_center_size(pos + vec2(20.0, 20.0), Vec2::splat(40.0));
+                p.rect_filled(r, CornerRadius::same(8), KEY_BORDER);
+                p.add(
+                    egui::epaint::RectShape::filled(
+                        r.shrink(2.0),
+                        CornerRadius::same(6),
+                        Color32::WHITE,
+                    )
+                    .with_texture(
+                        image.id(),
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    ),
+                );
+                return;
+            }
+            (DragPayload::Member(_), Some(DragLook::Member { image, glyph })) => (*image, *glyph),
+            (DragPayload::Action(uuid), _) => (
+                None,
+                actions::find(uuid).map_or(icon::PUZZLE_PIECE, |a| a.icon),
+            ),
+            (DragPayload::Key { .. } | DragPayload::Member(_), _) => (None, icon::SQUARE),
+        };
+        let r = Rect::from_center_size(pos + vec2(20.0, 20.0), Vec2::splat(40.0));
+        p.rect_filled(r, CornerRadius::same(8), KEY_BORDER);
+        p.rect_filled(r.shrink(2.0), CornerRadius::same(6), Color32::BLACK);
+        match look {
+            (Some(image), _) => draw_list_icon(&p, r.shrink(9.0), Some(image), TEXT),
+            (None, glyph) => {
+                p.text(r.center(), Align2::CENTER_CENTER, glyph, font(20.0), TEXT);
+            }
+        }
     }
 
     /// A texture for a plugin image (action and category icons).
@@ -1387,11 +1451,28 @@ impl App {
             let placed = config
                 .as_ref()
                 .is_some_and(|k| k.action == actions::PARENT_FOLDER);
-            if config.is_some() {
+            if let Some(key) = &config {
                 response.dnd_set_drag_payload(DragPayload::Key {
                     page: page_id.clone(),
                     index,
                 });
+                if response.drag_started() {
+                    // Only the key's icon: no title, no piece of the wallpaper.
+                    let icon_only = KeyConfig {
+                        title: String::new(),
+                        ..key.clone()
+                    };
+                    let px = (DRAG_ICON * ppp).round().clamp(32.0, 288.0) as u32;
+                    let img = self
+                        .renderer
+                        .render_on(Some(&icon_only), px, live, None, None);
+                    let size = [px as usize, px as usize];
+                    let color = ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                    let image = ui
+                        .ctx()
+                        .load_texture("drag-key", color, TextureOptions::LINEAR);
+                    self.drag_look = Some(DragLook::Key(image));
+                }
             }
             let hovered_drop = response.dnd_hover_payload::<DragPayload>().is_some();
             let border_color = if hovered_drop {
@@ -1775,7 +1856,7 @@ impl App {
             self.folder_strip(ui, &geo, profile, view);
         }
 
-        drag_preview(ui.ctx());
+        self.drag_preview(ui.ctx());
     }
 
     /// The wallpaper button at the right end of the page strip's row. It
@@ -2313,7 +2394,7 @@ impl App {
         ) {
             self.history_shortcut = Some(direction);
         }
-        drag_preview(ui.ctx());
+        self.drag_preview(ui.ctx());
         let changed = *key != before;
         self.group = (!close).then_some(group);
         if changed {
@@ -2359,6 +2440,9 @@ impl App {
                         Sense::click_and_drag(),
                     );
                     resp.dnd_set_drag_payload(DragPayload::Member(i));
+                    if resp.drag_started() {
+                        self.drag_look = Some(DragLook::Member { image: *tex, glyph });
+                    }
                     let on = group.member == Some(i);
                     let fill = if on {
                         PREF_ROW_SELECTED
@@ -4851,26 +4935,6 @@ fn auto_exit_toggle(ui: &mut Ui, value: &mut bool) -> egui::Response {
     response
 }
 
-/// Preview of what is being dragged.
-fn drag_preview(ctx: &egui::Context) {
-    let Some(payload) = egui::DragAndDrop::payload::<DragPayload>(ctx) else {
-        return;
-    };
-    let Some(pos) = ctx.pointer_interact_pos() else {
-        return;
-    };
-    let glyph = match &*payload {
-        DragPayload::Action(uuid) => actions::find(uuid).map_or(icon::PUZZLE_PIECE, |a| a.icon),
-        DragPayload::Key { .. } | DragPayload::Member(_) => icon::SQUARE,
-    };
-    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-preview"));
-    let p = ctx.layer_painter(layer);
-    let r = Rect::from_center_size(pos + vec2(20.0, 20.0), Vec2::splat(40.0));
-    p.rect_filled(r, CornerRadius::same(8), KEY_BORDER);
-    p.rect_filled(r.shrink(2.0), CornerRadius::same(6), Color32::BLACK);
-    p.text(r.center(), Align2::CENTER_CENTER, glyph, font(20.0), TEXT);
-}
-
 /// Puts a copied action in the open group: after the selected row, or in
 /// the selected Key Logic slot in place of what it holds.
 fn paste_member(key: &mut KeyConfig, group: &mut GroupEdit, copy: &KeyClipboard) {
@@ -5502,6 +5566,27 @@ mod auto_exit_tests {
     }
 
     #[test]
+    fn a_dragged_key_keeps_its_image_until_the_drag_ends() {
+        let mut app = clipboard_tests::editor();
+        let ctx = egui::Context::default();
+        let color = ColorImage::new([4, 4], vec![Color32::WHITE; 16]);
+        let image = ctx.load_texture("drag-key", color, TextureOptions::LINEAR);
+        app.drag_look = Some(DragLook::Key(image));
+        egui::DragAndDrop::set_payload(
+            &ctx,
+            DragPayload::Key {
+                page: "p".to_owned(),
+                index: 0,
+            },
+        );
+        app.drag_preview(&ctx);
+        assert!(app.drag_look.is_some());
+        egui::DragAndDrop::clear_payload(&ctx);
+        app.drag_preview(&ctx);
+        assert!(app.drag_look.is_none());
+    }
+
+    #[test]
     fn a_cross_page_drag_ignores_missing_pages_keys_and_places() {
         let mut profile = Profile::new("Test", DeviceKind::Mk2);
         profile.add_page();
@@ -5819,6 +5904,7 @@ mod clipboard_tests {
             selected_device: None,
             offline_profile: None,
             selected_key: Some(0),
+            drag_look: None,
             page_hover: None,
             pinned_view: None,
             group: None,
