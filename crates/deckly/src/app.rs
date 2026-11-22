@@ -1900,6 +1900,8 @@ impl App {
                 DragPayload::Member(_) => false,
             });
         let mut resting = None;
+        // The pointer itself, not hover: a resting drag sends no events.
+        let pointer = ui.ctx().pointer_latest_pos();
         {
             let r = Rect::from_min_size(pos2(strip.left() + 2.0, strip.top()), vec2(CHIP, HEIGHT));
             let resp = ui
@@ -1938,7 +1940,7 @@ impl App {
             let current = i == *page && !*pinned;
             if current {
                 painter.rect_filled(r.shrink2(vec2(1.0, 1.0)), CornerRadius::same(9), PAGER_CHIP);
-            } else if springs && resp.contains_pointer() {
+            } else if springs && pointer.is_some_and(|p| r.contains(p)) {
                 resting = Some(i);
                 painter.rect_stroke(
                     r.shrink2(vec2(1.0, 1.0)),
@@ -1999,13 +2001,14 @@ impl App {
                     new_pinned = false;
                     self.page_hover = None;
                 } else {
-                    ui.ctx()
-                        .request_repaint_after(PAGE_SPRING.saturating_sub(since.elapsed()));
+                    // A timed wake-up does not always come while the button
+                    // is held, so keep drawing for these few frames.
+                    ui.ctx().request_repaint();
                 }
             }
             (Some(i), _) => {
                 self.page_hover = Some((i, Instant::now()));
-                ui.ctx().request_repaint_after(PAGE_SPRING);
+                ui.ctx().request_repaint();
             }
             (None, _) => self.page_hover = None,
         }
