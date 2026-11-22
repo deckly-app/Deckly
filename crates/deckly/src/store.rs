@@ -98,30 +98,49 @@ fn profiles_dir() -> Option<PathBuf> {
     Some(config_dir()?.join("profiles"))
 }
 
+/// What loading the profiles found.
+#[derive(Default)]
+pub struct Loaded {
+    pub profiles: Vec<Profile>,
+    /// Files that could not be loaded.
+    pub errors: Vec<String>,
+    /// Profiles that loaded with their damaged pinned actions left out.
+    pub damaged_pins: Vec<String>,
+}
+
 /// Loads every profile; damaged files are skipped and reported.
-pub fn load_profiles() -> (Vec<Profile>, Vec<String>) {
-    let mut profiles = Vec::new();
-    let mut errors = Vec::new();
+pub fn load_profiles() -> Loaded {
+    let mut loaded = Loaded::default();
     let Some(dir) = profiles_dir() else {
-        return (profiles, errors);
+        return loaded;
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        return (profiles, errors);
+        return loaded;
     };
+    let Loaded {
+        profiles,
+        errors,
+        damaged_pins,
+    } = &mut loaded;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        match Profile::load(&path) {
-            Ok(p) if profiles.iter().any(|q: &Profile| q.id == p.id) => {
+        match Profile::load_checked(&path) {
+            Ok((p, _)) if profiles.iter().any(|q: &Profile| q.id == p.id) => {
                 errors.push(format!("{}: duplicate profile id", path.display()));
             }
-            Ok(p) => profiles.push(p),
+            Ok((p, damage)) => {
+                if let Some(damage) = damage {
+                    damaged_pins.push(format!("{}: {damage}", path.display()));
+                }
+                profiles.push(p);
+            }
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         }
     }
-    (profiles, errors)
+    loaded
 }
 
 fn profile_path(id: &str) -> Option<PathBuf> {

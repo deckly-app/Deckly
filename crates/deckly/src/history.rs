@@ -11,6 +11,8 @@ const GROUP_DELAY: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Location {
     pub page: usize,
+    /// The canvas shows the pinned actions instead of the page.
+    pub pinned: bool,
     pub path: Vec<String>,
     pub key: Option<u8>,
 }
@@ -227,6 +229,7 @@ mod tests {
         after.pages.pop();
         after.normalize_folders();
         let location = Location {
+            pinned: false,
             page: 1,
             path: vec![folder],
             key: Some(1),

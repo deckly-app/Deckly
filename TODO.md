@@ -57,11 +57,16 @@ Chosen by the project owner on 2026-11-14.
       actions on the other keys, with their matching images and titles.
       Releasing it restores the previous set. Release, device disconnect and
       session lock must never leave the temporary layer stuck on.
-- [ ] Pin keys across profiles: pin a key to its position, then see the same
+- [x] Pin keys across profiles: pin a key to its position, then see the same
       action there when switching to another profile. A local action in that
       position overrides the pinned key for that profile without removing
       the pin from other profiles. Page/folder behavior and the scope across
       devices and models are not decided yet.
+      Done: as in the official app, pins belong to one profile and show on
+      every page and folder of it where the key is empty. Pin Action /
+      Unpin Action in a key's menu, the pin chip left of the page numbers
+      shows them all; a page's own key wins there
+      (docs/clean-room/2026-11-22-pinned-actions.md).
 - [ ] Select and edit multiple keys: Ctrl/Shift selection or a selection
       rectangle, shared appearance edits, copying or moving a block to
       another page, and clearing the selection. Each bulk edit is undoable

@@ -117,9 +117,22 @@ pub struct Background {
 
 impl Background {
     pub fn start(instance: Option<Instance>) -> Rc<Self> {
-        let (profiles, errors) = store::load_profiles();
+        let store::Loaded {
+            profiles,
+            errors,
+            damaged_pins,
+        } = store::load_profiles();
         let (settings, settings_error) = store::load_settings();
         let mut state = runtime::State::new(profiles, settings);
+        for e in &damaged_pins {
+            eprintln!("deckly: {e}");
+        }
+        if !damaged_pins.is_empty() {
+            state.notify(format!(
+                "Pinned actions in {} profile(s) were damaged; the readable ones were kept",
+                damaged_pins.len()
+            ));
+        }
         if let Some(e) = settings_error {
             eprintln!("deckly: {e}");
             state.notify("Settings could not be loaded; using defaults");

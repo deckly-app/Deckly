@@ -76,6 +76,16 @@ pub struct Profile {
     /// that a key leads to are kept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<Page>,
+    /// Pinned keys: each shows at its place on every page and folder of the
+    /// profile where that place has no key of its own
+    /// (docs/clean-room/2026-11-22-pinned-actions.md). `None` when nothing is
+    /// pinned.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_pinned"
+    )]
+    pub pinned: Option<Page>,
     /// Applications that bring this profile up while they are in the
     /// foreground. Kept here so they leave with the profile when it is
     /// deleted and travel with it in exports.
@@ -570,6 +580,55 @@ impl TitleAlign {
     }
 }
 
+/// Reads pinned keys so that damage to them costs only the damaged keys,
+/// never the profile.
+fn lenient_pinned<'de, D>(deserializer: D) -> Result<Option<Page>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(pinned_from_value))
+}
+
+fn pinned_from_value(value: serde_json::Value) -> Option<Page> {
+    if let Ok(page) = serde_json::from_value::<Page>(value.clone()) {
+        return Some(page);
+    }
+    let object = value.as_object()?;
+    let id = object
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let keys = object
+        .get("keys")
+        .and_then(|v| v.as_object())
+        .into_iter()
+        .flatten()
+        .filter_map(|(index, key)| {
+            Some((
+                index.parse().ok()?,
+                serde_json::from_value(key.clone()).ok()?,
+            ))
+        })
+        .collect();
+    Some(Page {
+        id,
+        keys,
+        ..Page::default()
+    })
+}
+
+/// What is wrong with the pinned keys in a profile file, if anything. The
+/// profile still loads; the damaged pinned keys are left out.
+pub fn pinned_damage(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let pinned = value.get("pinned").filter(|v| !v.is_null())?;
+    serde_json::from_value::<Page>(pinned.clone())
+        .err()
+        .map(|e| format!("some pinned actions could not be read and were left out ({e})"))
+}
+
 fn format_version() -> u32 {
     FORMAT_VERSION
 }
@@ -693,6 +752,7 @@ impl Profile {
             wallpaper_disabled: false,
             pages: vec![Page::new()],
             folders: Vec::new(),
+            pinned: None,
             applications: Vec::new(),
         }
     }
@@ -705,7 +765,7 @@ impl Profile {
         copy.name = name;
         copy.applications.clear();
         let mut ids = HashMap::new();
-        for page in copy.pages.iter_mut().chain(&mut copy.folders) {
+        for page in copy.all_pages_mut() {
             let id = new_id();
             ids.insert(page.id.clone(), id.clone());
             page.id = id;
@@ -823,7 +883,7 @@ impl Profile {
 
     /// Visits every key on pages and in folders, and every action a key holds.
     pub fn for_each_key(&mut self, mut visit: impl FnMut(&mut KeyConfig)) {
-        for page in self.pages.iter_mut().chain(&mut self.folders) {
+        for page in self.all_pages_mut() {
             for key in page.keys.values_mut() {
                 visit(key);
                 key.groups.iter_mut().flatten().for_each(&mut visit);
@@ -834,7 +894,7 @@ impl Profile {
     /// Visits every picture the profile points at, including wallpapers.
     pub fn for_each_picture(&mut self, mut visit: impl FnMut(&mut Option<PathBuf>)) {
         Wallpaper::visit_picture(&mut self.wallpaper, &mut visit);
-        for page in self.pages.iter_mut().chain(&mut self.folders) {
+        for page in self.all_pages_mut() {
             visit(&mut page.icon);
             Wallpaper::visit_picture(&mut page.wallpaper, &mut visit);
         }
@@ -846,6 +906,7 @@ impl Profile {
     pub fn is_placeholder(&self) -> bool {
         self.name == DEFAULT_PROFILE_NAME
             && self.folders.is_empty()
+            && self.pinned.is_none()
             && self.applications.is_empty()
             && self.wallpaper.is_none()
             && !self.wallpaper_disabled
@@ -873,7 +934,7 @@ impl Profile {
                 walk.original.insert(folder.id.clone(), folder);
             }
         }
-        for page in &mut self.pages {
+        for page in self.pages.iter_mut().chain(&mut self.pinned) {
             walk.resolve(page, &[], key_count);
         }
         // Folders keep their place in the file; new ones go last.
@@ -884,6 +945,152 @@ impl Profile {
                 .unwrap_or(usize::MAX)
         });
         self.folders = walk.done;
+    }
+
+    /// Every page of keys: the pages, the pinned keys, the folders.
+    pub fn all_pages(&self) -> impl Iterator<Item = &Page> {
+        self.pages.iter().chain(&self.pinned).chain(&self.folders)
+    }
+
+    pub fn all_pages_mut(&mut self) -> impl Iterator<Item = &mut Page> {
+        self.pages
+            .iter_mut()
+            .chain(&mut self.pinned)
+            .chain(&mut self.folders)
+    }
+
+    /// A page, the pinned keys or a folder, by id.
+    pub fn any_page(&self, id: &str) -> Option<&Page> {
+        self.all_pages().find(|p| p.id == id)
+    }
+
+    pub fn any_page_mut(&mut self, id: &str) -> Option<&mut Page> {
+        self.all_pages_mut().find(|p| p.id == id)
+    }
+
+    /// Whether `id` is the page of pinned keys.
+    pub fn is_pinned_page(&self, id: &str) -> bool {
+        self.pinned.as_ref().is_some_and(|p| p.id == id)
+    }
+
+    /// The key at `index` on `page`, one of this profile's pages, folders or
+    /// its pinned keys, as the device and the editor show it: the page's own
+    /// key, else the key pinned there. Everything that shows or runs a key
+    /// goes through here, so they never disagree.
+    pub fn resolve<'a>(&'a self, page: &'a Page, index: u8) -> Option<ShownKey<'a>> {
+        if let Some(key) = page.keys.get(&index) {
+            return Some(ShownKey {
+                page,
+                key,
+                pinned: self.is_pinned_page(&page.id),
+            });
+        }
+        let pinned = self.pinned.as_ref().filter(|p| p.id != page.id)?;
+        Some(ShownKey {
+            page: pinned,
+            key: pinned.keys.get(&index)?,
+            pinned: true,
+        })
+    }
+
+    /// Every key `page` shows, by index; see [`Profile::resolve`].
+    pub fn shown_keys<'a>(&'a self, page: &'a Page) -> BTreeMap<u8, ShownKey<'a>> {
+        let pinned = self.pinned.iter().flat_map(|p| p.keys.keys());
+        page.keys
+            .keys()
+            .chain(pinned)
+            .filter_map(|&i| Some((i, self.resolve(page, i)?)))
+            .collect()
+    }
+
+    /// Moves the key at `index` of a page or folder to the pinned keys, where
+    /// it shows on every page and folder that has no key of its own there.
+    pub fn pin(&mut self, page_id: &str, index: u8) -> Result<(), PinError> {
+        if self.is_pinned_page(page_id) {
+            return Err(PinError::AlreadyPinned);
+        }
+        let page = self
+            .pages
+            .iter()
+            .chain(&self.folders)
+            .find(|p| p.id == page_id)
+            .ok_or(PinError::Gone)?;
+        let key = page.keys.get(&index).ok_or(PinError::Empty)?;
+        if key.action == PARENT_FOLDER_ACTION {
+            return Err(PinError::ParentFolder);
+        }
+        if self.pinned_key(index).is_some() {
+            return Err(PinError::Taken);
+        }
+        let key = self
+            .any_page_mut(page_id)
+            .and_then(|p| p.keys.remove(&index))
+            .ok_or(PinError::Empty)?;
+        self.pinned
+            .get_or_insert_with(Page::new)
+            .keys
+            .insert(index, key);
+        Ok(())
+    }
+
+    /// Moves the key pinned at `index` onto the page or folder `page_id`,
+    /// which must have no key of its own there. The other pages and folders
+    /// no longer show it.
+    pub fn unpin(&mut self, index: u8, page_id: &str) -> Result<(), PinError> {
+        if self.is_pinned_page(page_id) {
+            return Err(PinError::Gone);
+        }
+        let target = self
+            .pages
+            .iter()
+            .chain(&self.folders)
+            .find(|p| p.id == page_id)
+            .ok_or(PinError::Gone)?;
+        if target.keys.contains_key(&index) {
+            return Err(PinError::Taken);
+        }
+        let key = self
+            .pinned
+            .as_mut()
+            .and_then(|p| p.keys.remove(&index))
+            .ok_or(PinError::Empty)?;
+        if let Some(target) = self.any_page_mut(page_id) {
+            target.keys.insert(index, key);
+        }
+        if self.pinned.as_ref().is_some_and(|p| p.keys.is_empty()) {
+            self.pinned = None;
+        }
+        Ok(())
+    }
+
+    /// The key pinned at `index`.
+    pub fn pinned_key(&self, index: u8) -> Option<&KeyConfig> {
+        self.pinned.as_ref()?.keys.get(&index)
+    }
+
+    /// Pinned keys are a set of keys, not a page: no name, picture or
+    /// wallpaper, no parent folder key, and an id of their own.
+    fn sanitize_pinned(&mut self) {
+        let taken: HashSet<String> = self
+            .pages
+            .iter()
+            .chain(&self.folders)
+            .map(|p| p.id.clone())
+            .collect();
+        let Some(pinned) = &mut self.pinned else {
+            return;
+        };
+        if pinned.id.is_empty() || taken.contains(&pinned.id) {
+            pinned.id = new_id();
+        }
+        pinned.name.clear();
+        pinned.icon = None;
+        pinned.wallpaper = None;
+        pinned.wallpaper_disabled = false;
+        pinned.keys.retain(|_, k| k.action != PARENT_FOLDER_ACTION);
+        if pinned.keys.is_empty() {
+            self.pinned = None;
+        }
     }
 
     pub fn model(&self) -> &'static DeviceModel {
@@ -903,7 +1110,8 @@ impl Profile {
             self.pages.push(Page::new());
         }
         self.folders.truncate(MAX_FOLDERS);
-        for page in self.pages.iter_mut().chain(&mut self.folders) {
+        self.sanitize_pinned();
+        for page in self.all_pages_mut() {
             if page.id.is_empty() {
                 page.id = new_id();
             }
@@ -917,6 +1125,9 @@ impl Profile {
                 sanitize_title(key);
                 key.sanitize_groups();
             }
+        }
+        if self.pinned.as_ref().is_some_and(|p| p.keys.is_empty()) {
+            self.pinned = None;
         }
         self.normalize_folders();
         if self.id.is_empty() {
@@ -944,12 +1155,18 @@ impl Profile {
     }
 
     pub fn load(path: &Path) -> Result<Self, ProfileError> {
+        Self::load_checked(path).map(|(profile, _)| profile)
+    }
+
+    /// Loads a profile and says what was wrong with its pinned keys.
+    pub fn load_checked(path: &Path) -> Result<(Self, Option<String>), ProfileError> {
         let len = std::fs::metadata(path).map_err(ProfileError::Io)?.len();
         if len > MAX_FILE_BYTES {
             return Err(ProfileError::TooLarge(len));
         }
         let text = std::fs::read_to_string(path).map_err(ProfileError::Io)?;
-        Self::from_json(&text)
+        let profile = Self::from_json(&text)?;
+        Ok((profile, pinned_damage(&text)))
     }
 
     /// Writes through a temporary file so a crash never leaves a half-written
@@ -1051,6 +1268,47 @@ fn ensure_parent_key(folder: &mut Page, key_count: u8) {
         KeyConfig::new(PARENT_FOLDER_ACTION, serde_json::json!({})),
     );
 }
+
+/// A key as a page or folder shows it; see [`Profile::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShownKey<'a> {
+    /// Where the key is kept: the page itself, or the pinned keys. Plugins
+    /// know the key by this page's id, so a pinned key stays one instance
+    /// on every page that shows it.
+    pub page: &'a Page,
+    pub key: &'a KeyConfig,
+    /// The key is pinned.
+    pub pinned: bool,
+}
+
+/// Why a key cannot be pinned or unpinned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinError {
+    /// The page or folder is no longer there.
+    Gone,
+    /// There is no key at that place.
+    Empty,
+    /// The key is pinned already.
+    AlreadyPinned,
+    /// A parent folder key belongs to its folder.
+    ParentFolder,
+    /// Another key is at that place already.
+    Taken,
+}
+
+impl fmt::Display for PinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Gone => "This page is no longer there",
+            Self::Empty => "There is no action at this place",
+            Self::AlreadyPinned => "This action is pinned already",
+            Self::ParentFolder => "The Parent Folder key stays in its folder",
+            Self::Taken => "Another action is already at this place",
+        })
+    }
+}
+
+impl std::error::Error for PinError {}
 
 #[derive(Debug)]
 pub enum ProfileError {
@@ -1978,5 +2236,178 @@ mod tests {
         assert!(
             Profile::from_json(r#"{"id":"a","name":"x","device":"toaster","pages":[]}"#).is_err()
         );
+    }
+    fn hotkey(title: &str) -> KeyConfig {
+        let mut key = KeyConfig::new("com.deckly.system.hotkey", json!({}));
+        key.title = title.into();
+        key
+    }
+
+    /// A profile with two pages and a folder on the first one.
+    fn pinning_profile() -> Profile {
+        let mut p = Profile::new("P", DeviceKind::Mk2);
+        p.add_page();
+        p.pages[0]
+            .keys
+            .insert(4, KeyConfig::new(FOLDER_ACTION, json!({})));
+        p.pages[0].keys.insert(2, hotkey("mute"));
+        p.normalize_folders();
+        p
+    }
+
+    fn shown_title(p: &Profile, page: &Page, index: u8) -> Option<String> {
+        p.resolve(page, index).map(|k| k.key.title.clone())
+    }
+
+    #[test]
+    fn a_pinned_key_shows_on_every_page_and_folder_without_a_key_there() {
+        let mut p = pinning_profile();
+        let page = p.pages[0].id.clone();
+        p.pin(&page, 2).unwrap();
+        assert!(!p.pages[0].keys.contains_key(&2));
+        let pinned = p.pinned.clone().unwrap();
+        for page in p.pages.iter().chain(&p.folders) {
+            let shown = p.resolve(page, 2).unwrap();
+            assert!(shown.pinned);
+            assert_eq!(shown.page.id, pinned.id, "one instance everywhere");
+            assert_eq!(shown.key.title, "mute");
+        }
+        assert_eq!(p.resolve(&pinned, 2).map(|k| k.pinned), Some(true));
+        assert_eq!(p.resolve(&p.pages[1], 3), None);
+    }
+
+    #[test]
+    fn a_key_of_its_own_wins_over_the_pin_on_that_page_only() {
+        let mut p = pinning_profile();
+        let page = p.pages[0].id.clone();
+        p.pin(&page, 2).unwrap();
+        p.pages[1].keys.insert(2, hotkey("local"));
+        assert_eq!(shown_title(&p, &p.pages[1], 2).as_deref(), Some("local"));
+        assert!(!p.resolve(&p.pages[1], 2).unwrap().pinned);
+        assert_eq!(shown_title(&p, &p.pages[0], 2).as_deref(), Some("mute"));
+        let folder = p.folders[0].clone();
+        assert_eq!(shown_title(&p, &folder, 2).as_deref(), Some("mute"));
+        // Clearing the local key shows the pin again.
+        p.pages[1].keys.remove(&2);
+        assert_eq!(shown_title(&p, &p.pages[1], 2).as_deref(), Some("mute"));
+    }
+
+    #[test]
+    fn the_parent_folder_key_wins_and_cannot_be_pinned() {
+        let mut p = pinning_profile();
+        let folder = p.folders[0].id.clone();
+        let parent = *p.folders[0]
+            .keys
+            .iter()
+            .find(|(_, k)| k.action == PARENT_FOLDER_ACTION)
+            .unwrap()
+            .0;
+        assert_eq!(p.pin(&folder, parent), Err(PinError::ParentFolder));
+        p.pages[1].keys.insert(parent, hotkey("pin"));
+        let page = p.pages[1].id.clone();
+        p.pin(&page, parent).unwrap();
+        let shown = p.resolve(&p.folders[0], parent).unwrap();
+        assert_eq!(shown.key.action, PARENT_FOLDER_ACTION);
+    }
+
+    #[test]
+    fn pinning_refuses_a_taken_place_and_unpin_lands_where_asked() {
+        let mut p = pinning_profile();
+        let (first, second) = (p.pages[0].id.clone(), p.pages[1].id.clone());
+        p.pin(&first, 2).unwrap();
+        p.pages[1].keys.insert(2, hotkey("other"));
+        assert_eq!(p.pin(&second, 2), Err(PinError::Taken));
+        assert_eq!(p.unpin(2, &second), Err(PinError::Taken));
+        assert_eq!(p.pin(&first, 9), Err(PinError::Empty));
+        let pinned = p.pinned.as_ref().unwrap().id.clone();
+        assert_eq!(p.pin(&pinned, 2), Err(PinError::AlreadyPinned));
+        let folder = p.folders[0].id.clone();
+        p.unpin(2, &folder).unwrap();
+        assert_eq!(p.pinned, None, "the last unpin leaves nothing pinned");
+        assert_eq!(p.folders[0].keys[&2].title, "mute");
+        assert_eq!(shown_title(&p, &p.pages[0], 2), None);
+        assert_eq!(p.unpin(2, &folder), Err(PinError::Taken));
+        assert_eq!(p.unpin(3, &first), Err(PinError::Empty));
+    }
+
+    #[test]
+    fn a_pinned_folder_keeps_its_folder() {
+        let mut p = pinning_profile();
+        let page = p.pages[0].id.clone();
+        let folder = p.pages[0].keys[&4].folder().unwrap().to_owned();
+        p.pin(&page, 4).unwrap();
+        p.normalize_folders();
+        assert_eq!(p.pinned_key(4).and_then(|k| k.folder()), Some(&*folder));
+        assert!(p.folder(&folder).is_some());
+        let copy = p.duplicate("Copy".into());
+        let pinned = copy.pinned.as_ref().unwrap();
+        assert_ne!(pinned.id, p.pinned.as_ref().unwrap().id);
+        let opened = pinned.keys[&4].folder().unwrap();
+        assert!(copy.folder(opened).is_some());
+        assert_ne!(opened, folder);
+    }
+
+    #[test]
+    fn pins_belong_to_their_profile() {
+        let mut a = pinning_profile();
+        let page = a.pages[0].id.clone();
+        a.pin(&page, 2).unwrap();
+        let b = Profile::new("B", DeviceKind::Mk2);
+        assert_eq!(b.resolve(&b.pages[0], 2), None);
+        // Another model keeps only the places it has.
+        let mut json: serde_json::Value = serde_json::from_str(&a.to_json().unwrap()).unwrap();
+        json["device"] = json!("mini");
+        json["pinned"]["keys"]["14"] = serde_json::to_value(hotkey("far")).unwrap();
+        let mini = Profile::from_json(&json.to_string()).unwrap();
+        let pinned = mini.pinned.unwrap();
+        assert!(pinned.keys.keys().all(|&k| k < 6));
+        assert!(pinned.keys.contains_key(&2));
+    }
+
+    #[test]
+    fn pinned_keys_round_trip_and_old_files_load_unchanged() {
+        let mut p = pinning_profile();
+        let page = p.pages[0].id.clone();
+        p.pin(&page, 2).unwrap();
+        let back = Profile::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back, p);
+        let old = r#"{"version":1,"id":"a","name":"x","device":"mk2","pages":[{"id":"p","keys":{"0":{"action":"com.deckly.system.hotkey"}}}]}"#;
+        let old = Profile::from_json(old).unwrap();
+        assert_eq!(old.pinned, None);
+        assert!(!old.to_json().unwrap().contains("pinned"));
+    }
+
+    #[test]
+    fn damaged_pinned_keys_cost_only_themselves() {
+        let text = r#"{"id":"a","name":"x","device":"mk2","pages":[{"id":"p","keys":{}}],
+            "pinned":{"id":"pin","name":5,"keys":{"1":{"action":"com.deckly.system.hotkey"},"2":{"title":3},"x":{},"0":{"action":"com.deckly.navigation.parent-folder"}}}}"#;
+        let p = Profile::from_json(text).unwrap();
+        let pinned = p.pinned.as_ref().unwrap();
+        assert_eq!(pinned.keys.keys().copied().collect::<Vec<_>>(), [1]);
+        assert!(pinned_damage(text).is_some());
+        for broken in ["5", "\"x\"", "[]", "{}", r#"{"keys":7}"#] {
+            let text =
+                format!(r#"{{"id":"a","name":"x","device":"mk2","pages":[],"pinned":{broken}}}"#);
+            let p = Profile::from_json(&text).unwrap();
+            assert_eq!(p.pinned, None, "{broken}");
+            assert_eq!(p.pages.len(), 1);
+        }
+        assert_eq!(pinned_damage(r#"{"pinned":null}"#), None);
+        // Pinned keys never share an id with a page.
+        let text = r#"{"id":"a","name":"x","device":"mk2","pages":[{"id":"p"}],
+            "pinned":{"id":"p","keys":{"1":{"action":"com.deckly.system.hotkey"}}}}"#;
+        let p = Profile::from_json(text).unwrap();
+        assert_ne!(p.pinned.unwrap().id, "p");
+    }
+
+    #[test]
+    fn shown_keys_merge_own_and_pinned_keys() {
+        let mut p = pinning_profile();
+        let page = p.pages[0].id.clone();
+        p.pin(&page, 2).unwrap();
+        p.pages[1].keys.insert(7, hotkey("own"));
+        let shown = p.shown_keys(&p.pages[1]);
+        assert_eq!(shown.keys().copied().collect::<Vec<_>>(), [2, 7]);
+        assert!(shown[&2].pinned && !shown[&7].pinned);
     }
 }

@@ -24,7 +24,7 @@ use deckly_core::{
 use deckly_device::{ConnectedDevice, DeviceManager, Event, Handle};
 use deckly_plugin_host::{Host, Instance, Status, protocol};
 use image::RgbaImage;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -436,7 +436,7 @@ impl State {
 
     fn key(&self, serial: &str, key: u8) -> Option<KeyConfig> {
         let profile = self.assigned(serial)?;
-        self.shown(profile)?.keys.get(&key).cloned()
+        Some(profile.resolve(self.shown(profile)?, key)?.key.clone())
     }
 
     /// A fingerprint of the page or folder a device shows: it changes with
@@ -445,10 +445,21 @@ impl State {
     /// store them at any time.
     fn page_stamp(&self, serial: &str) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
-        let Some(page) = self.assigned(serial).and_then(|p| self.shown(p)) else {
+        let Some((profile, page)) = self
+            .assigned(serial)
+            .and_then(|p| Some((p, self.shown(p)?)))
+        else {
             return 0;
         };
-        let mut page = page.clone();
+        // What the device shows, pinned keys included.
+        let mut page = Page {
+            keys: profile
+                .shown_keys(page)
+                .into_iter()
+                .map(|(i, shown)| (i, shown.key.clone()))
+                .collect(),
+            ..page.clone()
+        };
         let plugin = |k: &KeyConfig| self.catalog.action(&k.action).is_some();
         for key in page.keys.values_mut() {
             if plugin(key) {
@@ -467,8 +478,11 @@ impl State {
 
     /// The context of a key on what a device shows now.
     pub(crate) fn context(&self, serial: &str, key: u8) -> Option<String> {
-        let page = self.shown(self.assigned(serial)?)?;
-        Some(plugins::context(&page.id, key))
+        let profile = self.assigned(serial)?;
+        let page = self.shown(profile)?;
+        // A pinned key is one instance on every page that shows it.
+        let owner = profile.resolve(page, key).map_or(page, |k| k.page);
+        Some(plugins::context(&owner.id, key))
     }
 }
 
@@ -1516,11 +1530,7 @@ fn update_members(host: Option<&Host>, link: &mut Link, new: HashMap<String, Sho
 fn update_shown(host: Option<&Host>, slot: &mut Option<Shown>, new: Option<Shown>) {
     if let Some(host) = host {
         match (slot.as_ref(), new.as_ref()) {
-            (Some(old), Some(n))
-                if old.instance.context == n.instance.context
-                    && old.instance.action == n.instance.action
-                    && old.instance.device == n.instance.device =>
-            {
+            (Some(old), Some(n)) if same_instance(old, n) => {
                 if old.title != n.title || old.style != n.style {
                     let align = match n.style.align {
                         deckly_core::TitleAlign::Top => "top",
@@ -1552,6 +1562,15 @@ fn update_shown(host: Option<&Host>, slot: &mut Option<Shown>, new: Option<Shown
         }
     }
     *slot = new;
+}
+
+/// Whether a key shows the same plugin instance as before: its plugin then
+/// hears no willDisappear/willAppear. A pinned key keeps its context on every
+/// page and folder of its profile, so moving between them is no change.
+fn same_instance(old: &Shown, new: &Shown) -> bool {
+    old.instance.context == new.instance.context
+        && old.instance.action == new.instance.action
+        && old.instance.device == new.instance.device
 }
 
 /// When the next awake device should fall asleep, if any should.
@@ -1884,16 +1903,31 @@ fn refresh(
                 .unwrap_or_default();
             let live = profile.map(|p| s.live(p)).unwrap_or_default();
             let device_id = protocol::device_id(&d.serial);
-            let members = page
-                .keys
+            // Each key as the device shows it, with the page that keeps it.
+            let shown: BTreeMap<u8, (String, KeyConfig)> = match profile {
+                Some(p) => p
+                    .shown_keys(&page)
+                    .into_iter()
+                    .map(|(i, k)| (i, (k.page.id.clone(), k.key.clone())))
+                    .collect(),
+                None => page
+                    .keys
+                    .iter()
+                    .map(|(&i, k)| (i, (page.id.clone(), k.clone())))
+                    .collect(),
+            };
+            let members = shown
                 .iter()
-                .flat_map(|(&k, key)| member_views(&s, &page.id, k, key, &device_id))
+                .flat_map(|(&k, (owner, key))| member_views(&s, owner, k, key, &device_id))
                 .collect();
             let keys = (0..d.model.key_count())
                 .map(|k| {
                     let pressed = s.pressed.contains(&(d.handle, k));
-                    let key = page.keys.get(&k).cloned();
-                    let context = plugins::context(&page.id, k);
+                    let (owner, key) = match shown.get(&k) {
+                        Some((owner, key)) => (owner.as_str(), Some(key.clone())),
+                        None => (page.id.as_str(), None),
+                    };
+                    let context = plugins::context(owner, k);
                     let overlay = key.as_ref().and_then(|c| s.overlay(&context, c));
                     let shown = key.as_ref().filter(|_| overlay.is_some()).and_then(|c| {
                         let (plugin, _) = s.catalog.action(&c.action)?;
@@ -3171,5 +3205,81 @@ mod tests {
         deck.links.remove(&1);
         assert!(!deck.wake(Duration::from_secs(60)));
         assert!(deck.ran().is_empty());
+    }
+    #[test]
+    fn a_pinned_key_stays_one_instance_across_pages_and_folders() {
+        let mut home = Profile::new("Home", DeviceKind::Mk2);
+        home.add_page();
+        home.pages[0].keys.insert(
+            4,
+            KeyConfig::new(deckly_core::profile::FOLDER_ACTION, json!({})),
+        );
+        home.normalize_folders();
+        home.pages[0]
+            .keys
+            .insert(2, KeyConfig::new("com.example.counter", json!({"n": 1})));
+        let first = home.pages[0].id.clone();
+        home.pin(&first, 2).unwrap();
+        let folder = home.folders[0].id.clone();
+        let mut other = Profile::new("Other", DeviceKind::Mk2);
+        other.pages[0]
+            .keys
+            .insert(2, KeyConfig::new("com.example.counter", json!({})));
+        let other_first = other.pages[0].id.clone();
+        other.pin(&other_first, 2).unwrap();
+        let (home_id, other_id) = (home.id.clone(), other.id.clone());
+        let mut s = State::new(vec![home, other], Settings::default());
+        s.settings.assignments.insert("S1".into(), home_id.clone());
+
+        let pinned = s.context("S1", 2).unwrap();
+        assert_eq!(s.key("S1", 2).unwrap().action, "com.example.counter");
+        s.set_page(&home_id, 1);
+        assert_eq!(s.context("S1", 2).as_deref(), Some(&*pinned));
+        // An edit to the pin is an edit to every page that shows it.
+        let stamp = s.page_stamp("S1");
+        if let Some(pin) = s.profile_mut(&home_id).unwrap().pinned.as_mut() {
+            pin.keys.get_mut(&2).unwrap().title = "Count".into();
+        }
+        assert_ne!(s.page_stamp("S1"), stamp);
+        s.set_folder_path(&home_id, vec![folder]);
+        assert_eq!(s.context("S1", 2).as_deref(), Some(&*pinned));
+        assert!(s.key("S1", 2).is_some());
+        s.set_folder_path(&home_id, Vec::new());
+
+        // A key of the page's own is another instance; the pin comes back.
+        let second = s.profile(&home_id).unwrap().pages[1].id.clone();
+        s.profile_mut(&home_id).unwrap().pages[1]
+            .keys
+            .insert(2, KeyConfig::new(actions::TEXT, json!({})));
+        assert_eq!(s.context("S1", 2), Some(plugins::context(&second, 2)));
+        assert_eq!(s.key("S1", 2).unwrap().action, actions::TEXT);
+        s.profile_mut(&home_id).unwrap().pages[1].keys.remove(&2);
+        assert_eq!(s.context("S1", 2).as_deref(), Some(&*pinned));
+
+        // Another profile's pin is another instance.
+        s.settings.assignments.insert("S1".into(), other_id);
+        assert_ne!(s.context("S1", 2).as_deref(), Some(&*pinned));
+    }
+
+    #[test]
+    fn plugins_hear_of_a_key_only_when_its_instance_changes() {
+        let shown = |context: &str| Shown {
+            plugin: "com.example".into(),
+            instance: Instance {
+                action: "com.example.counter".into(),
+                context: context.into(),
+                device: "D".into(),
+                settings: json!({}),
+                column: 2,
+                row: 0,
+                state: None,
+                in_multi_action: false,
+                desired_state: None,
+            },
+            title: String::new(),
+            style: TitleStyle::default(),
+        };
+        assert!(same_instance(&shown("pin.2"), &shown("pin.2")));
+        assert!(!same_instance(&shown("pin.2"), &shown("page.2")));
     }
 }

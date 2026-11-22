@@ -13,6 +13,9 @@ pub const CANVAS: Color32 = Color32::from_rgb(0x2D, 0x2D, 0x2D);
 pub const SPLITTER: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 pub const KEY_BORDER: Color32 = Color32::from_rgb(0x47, 0x47, 0x47);
 pub const KEY_EMPTY: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+/// Multiplies the picture of a pinned key on a page that has no key of its
+/// own there, so it reads as shown, not placed.
+pub const PINNED_TINT: Color32 = Color32::from_gray(140);
 pub const KEY_SELECTED: Color32 = Color32::from_rgb(0xC8, 0xC8, 0xC8);
 pub const KEY_DROP: Color32 = Color32::from_rgb(0x3E, 0x7A, 0xC0);
 pub const PAGER: Color32 = Color32::from_rgb(0x37, 0x37, 0x37);

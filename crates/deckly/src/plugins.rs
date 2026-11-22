@@ -291,7 +291,7 @@ impl State {
         let profile = self
             .profiles
             .iter()
-            .find(|p| p.pages.iter().chain(&p.folders).any(|page| page.id == here))?;
+            .find(|p| p.all_pages().any(|page| page.id == here))?;
         let index = usize::try_from(actions::int_setting(&key.settings, "page", 1) - 1).ok()?;
         let page = profile.pages.get(index)?;
         Some(Overlay {
@@ -363,9 +363,7 @@ impl State {
     fn page_mut(&mut self, page_id: &str) -> Option<(String, &mut Page)> {
         self.profiles.iter_mut().find_map(|p| {
             let id = p.id.clone();
-            p.pages
-                .iter_mut()
-                .chain(p.folders.iter_mut())
+            p.all_pages_mut()
                 .find(|page| page.id == page_id)
                 .map(|page| (id, page))
         })
@@ -374,11 +372,7 @@ impl State {
     fn key_at(&self, context: &str) -> Option<KeyConfig> {
         let (page_id, key, member) = parse_context(context)?;
         self.profiles.iter().find_map(|p| {
-            let page = p
-                .pages
-                .iter()
-                .chain(&p.folders)
-                .find(|page| page.id == page_id)?;
+            let page = p.all_pages().find(|page| page.id == page_id)?;
             at_place(page.keys.get(&key)?, member).cloned()
         })
     }
@@ -398,7 +392,7 @@ impl State {
         let profile = self
             .profiles
             .iter()
-            .find(|p| p.pages.iter().chain(&p.folders).any(|pg| pg.id == page_id));
+            .find(|p| p.all_pages().any(|pg| pg.id == page_id));
         let columns = profile.map_or(5, |p| p.model().columns).max(1);
         let device = profile
             .and_then(|p| {
@@ -415,7 +409,7 @@ impl State {
         // Key Logic actions stay on their key; Multi Action ones have no place.
         let in_multi_action = member.is_some()
             && profile
-                .and_then(|p| p.pages.iter().chain(&p.folders).find(|pg| pg.id == page_id))
+                .and_then(|p| p.all_pages().find(|pg| pg.id == page_id))
                 .and_then(|pg| pg.keys.get(&index))
                 .is_none_or(|k| k.action != actions::KEY_LOGIC);
         let desired = usize::from(key.desired_state.unwrap_or(0)).min(states.saturating_sub(1));
@@ -1025,7 +1019,7 @@ fn changed_keys(
 ) -> Vec<(String, KeyConfig)> {
     fn keys(profile: &deckly_core::Profile) -> HashMap<String, &KeyConfig> {
         let mut out = HashMap::new();
-        for page in profile.pages.iter().chain(&profile.folders) {
+        for page in profile.all_pages() {
             for (&index, key) in &page.keys {
                 out.insert(context(&page.id, index), key);
                 for (list, members) in key.groups.iter().enumerate() {
