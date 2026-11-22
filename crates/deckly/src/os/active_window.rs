@@ -13,11 +13,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub(in crate::os) mod linux;
 #[cfg(target_os = "macos")]
-mod macos;
+pub(in crate::os) mod macos;
 #[cfg(windows)]
-mod windows;
+pub(in crate::os) mod windows;
 
 #[cfg(target_os = "linux")]
 use self::linux as platform;

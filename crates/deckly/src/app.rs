@@ -2749,7 +2749,7 @@ impl App {
             self.image_editor = None;
         }
         let before = key.clone();
-        if key.action != actions::OPEN {
+        if key.action != actions::OPEN && key.action != actions::CLOSE {
             self.app_picker = None;
         }
         let defaults = self.renderer.title_defaults.clone();
@@ -3333,6 +3333,64 @@ impl App {
                 }
                 ui.end_row();
                 crate::open_window::rows(ui, &mut key.settings, &mut self.open_monitors, &label);
+            }
+            actions::CLOSE => {
+                label(ui, "App");
+                let mut selected_app = None;
+                ui.vertical(|ui| {
+                    let name = actions::str_setting(s, "application_name");
+                    if !name.is_empty() {
+                        ui.label(RichText::new(name).strong());
+                    }
+                    let mut app = actions::str_setting(s, "app").to_owned();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut app)
+                                .hint_text("Program, app or window class")
+                                .desired_width(320.0),
+                        )
+                        .changed()
+                    {
+                        actions::set_setting(s, "app", json!(app));
+                        actions::set_setting(s, "application_name", json!(""));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(format!("{}  Applications…", icon::APP_WINDOW))
+                            .clicked()
+                        {
+                            self.app_picker =
+                                Some(crate::app_picker::Picker::new(ui.ctx(), context.to_owned()));
+                        }
+                        if ui.button("File…").clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .set_title("Choose the program to close")
+                                .pick_file()
+                        {
+                            actions::set_setting(s, "app", json!(p.to_string_lossy()));
+                            actions::set_setting(s, "application_name", json!(""));
+                        }
+                    });
+                    if let Some(picker) = &mut self.app_picker {
+                        match picker.show(ui.ctx()) {
+                            crate::app_picker::Selection::Pending => {}
+                            crate::app_picker::Selection::Cancelled => self.app_picker = None,
+                            crate::app_picker::Selection::Application(app) => {
+                                selected_app = Some(app);
+                                self.app_picker = None;
+                            }
+                        }
+                    }
+                    let note = crate::os::close::limitation().unwrap_or(
+                        "Its windows are asked to close, as their close button would. \
+                         Without a window, the program is asked to quit.",
+                    );
+                    ui.add(egui::Label::new(RichText::new(note).weak()).wrap());
+                });
+                if let Some(app) = selected_app {
+                    crate::app_picker::apply_close(key, &app);
+                }
+                ui.end_row();
             }
             actions::WEBSITE => {
                 label(ui, "URL");

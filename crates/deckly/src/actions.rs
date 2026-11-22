@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 pub const HOTKEY: &str = "com.deckly.system.hotkey";
 pub const OPEN: &str = "com.deckly.system.open";
+pub const CLOSE: &str = "com.deckly.system.close";
 pub const WEBSITE: &str = "com.deckly.system.website";
 pub const TEXT: &str = "com.deckly.system.text";
 pub const MULTIMEDIA: &str = "com.deckly.system.multimedia";
@@ -137,6 +138,14 @@ pub const ACTIONS: &[ActionDef] = &[
         icon: icon::ROCKET_LAUNCH,
         tooltip: "Open an application or file, or run a command",
         defaults: || json!({ "path": "" }),
+    },
+    ActionDef {
+        uuid: CLOSE,
+        name: "Close",
+        category: Category::System,
+        icon: icon::X_SQUARE,
+        tooltip: "Close an application",
+        defaults: || json!({ "app": "" }),
     },
     ActionDef {
         uuid: TEXT,
@@ -440,6 +449,7 @@ pub fn run(key: &KeyConfig) -> Result<Outcome, String> {
             &os::placement::Placement::from_settings(s),
         )
         .map(|_| Outcome::Done),
+        CLOSE => os::close::close(str_setting(s, "app")).map(|_| Outcome::Done),
         WEBSITE => {
             let url = str_setting(s, "url").trim();
             if !(url.starts_with("http://") || url.starts_with("https://")) || url.len() < 10 {
@@ -602,6 +612,7 @@ mod tests {
                 "Website",
                 "Hotkey",
                 "Open",
+                "Close",
                 "Text",
                 "Multimedia",
                 "Brightness"
@@ -615,6 +626,12 @@ mod tests {
         assert_eq!(BrightnessChange::Up(30).apply(90), 100);
         assert_eq!(BrightnessChange::Down(30).apply(10), 0);
         assert_eq!(BrightnessChange::Set(250).apply(10), 100);
+    }
+
+    #[test]
+    fn close_needs_an_application() {
+        assert!(run(&KeyConfig::new(CLOSE, json!({}))).is_err());
+        assert!(run(&KeyConfig::new(CLOSE, json!({"app": "  "}))).is_err());
     }
 
     #[test]

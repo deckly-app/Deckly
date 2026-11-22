@@ -37,7 +37,7 @@ pub fn watch(report: Report) {
     }
 }
 
-fn is_wayland() -> bool {
+pub(in crate::os) fn is_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland")
 }
@@ -116,12 +116,14 @@ fn active_application(
 }
 
 /// The path of a process's program, if Deckly may look into it.
-fn program(pid: u32) -> Option<String> {
+pub(in crate::os) fn program(pid: u32) -> Option<String> {
     let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
     path.to_str().map(str::to_owned)
 }
 
-fn gone_is_none<T>(reply: Result<T, ReplyError>) -> Result<Option<T>, Box<dyn Error>> {
+pub(in crate::os) fn gone_is_none<T>(
+    reply: Result<T, ReplyError>,
+) -> Result<Option<T>, Box<dyn Error>> {
     match reply {
         Ok(reply) => Ok(Some(reply)),
         Err(ReplyError::X11Error(_)) => Ok(None),
@@ -130,7 +132,7 @@ fn gone_is_none<T>(reply: Result<T, ReplyError>) -> Result<Option<T>, Box<dyn Er
 }
 
 /// `WM_CLASS` holds an instance and a class name, each ending in a null.
-fn class_names(value: &[u8]) -> Vec<String> {
+pub(in crate::os) fn class_names(value: &[u8]) -> Vec<String> {
     value
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
