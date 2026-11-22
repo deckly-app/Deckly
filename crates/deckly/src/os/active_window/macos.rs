@@ -38,7 +38,7 @@ pub fn watch(report: Report) {
     }
 }
 
-fn names(app: &NSRunningApplication) -> Vec<String> {
+pub(in crate::os) fn names(app: &NSRunningApplication) -> Vec<String> {
     let path = |url: Option<objc2::rc::Retained<objc2_foundation::NSURL>>| {
         url.and_then(|url| url.path()).map(|path| path.to_string())
     };

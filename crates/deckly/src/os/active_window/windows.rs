@@ -96,7 +96,7 @@ unsafe extern "system" fn foreground_changed(
 
 /// The names of a window's application. A window that is gone, and a process
 /// Deckly may not look into, give what is left, which may be nothing.
-fn identify(window: HWND) -> Vec<String> {
+pub(in crate::os) fn identify(window: HWND) -> Vec<String> {
     let mut names = Vec::new();
     let mut id = 0;
     // SAFETY: `id` outlives the call; a stale window leaves it at 0.

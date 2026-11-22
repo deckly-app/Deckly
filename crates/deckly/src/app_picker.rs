@@ -311,17 +311,38 @@ pub fn apply(key: &mut KeyConfig, app: &Application) {
         serde_json::json!(app.name),
     );
     if key.title.is_empty() {
-        // Launcher/channel qualifiers stay in the inspector; the small key
-        // gets the app's name (e.g. Spotify instead of Spotify (Launcher)).
-        key.title = app
-            .name
-            .split(" (")
-            .next()
-            .unwrap_or(&app.name)
-            .chars()
-            .take(deckly_core::profile::MAX_TITLE_CHARS)
-            .collect();
+        key.title = short_name(&app.name);
     }
+}
+
+/// A Close key goes by what the application is called while it runs, or by
+/// its target when that cannot be told.
+pub fn apply_close(key: &mut KeyConfig, app: &Application) {
+    let target = if app.process.is_empty() {
+        &app.target
+    } else {
+        &app.process
+    };
+    actions::set_setting(&mut key.settings, "app", serde_json::json!(target));
+    actions::set_setting(
+        &mut key.settings,
+        "application_name",
+        serde_json::json!(app.name),
+    );
+    if key.title.is_empty() {
+        key.title = short_name(&app.name);
+    }
+}
+
+/// Launcher/channel qualifiers stay in the inspector; the small key gets the
+/// app's name (e.g. Spotify instead of Spotify (Launcher)).
+fn short_name(name: &str) -> String {
+    name.split(" (")
+        .next()
+        .unwrap_or(name)
+        .chars()
+        .take(deckly_core::profile::MAX_TITLE_CHARS)
+        .collect()
 }
 
 #[cfg(test)]
@@ -446,6 +467,34 @@ mod tests {
         assert_eq!(next_selection(0, 5, true), 1);
         assert_eq!(next_selection(4, 5, true), 4);
         assert_eq!(next_selection(100, 2, false), 1);
+    }
+
+    #[test]
+    fn a_close_key_goes_by_the_running_name() {
+        let mut key = actions::new_key(actions::find(actions::CLOSE).unwrap());
+        let mut app = Application {
+            name: "Spotify (Launcher)".into(),
+            target: "/apps/spotify.desktop".into(),
+            process: "Spotify-Client".into(),
+            detail: String::new(),
+            keywords: String::new(),
+            icon: String::new(),
+        };
+        apply_close(&mut key, &app);
+        assert_eq!(actions::str_setting(&key.settings, "app"), "Spotify-Client");
+        assert_eq!(key.title, "Spotify");
+        app.process.clear();
+        apply_close(&mut key, &app);
+        assert_eq!(
+            actions::str_setting(&key.settings, "app"),
+            "/apps/spotify.desktop"
+        );
+        assert_eq!(
+            crate::os::close::target(actions::str_setting(&key.settings, "app"))
+                .unwrap()
+                .id,
+            "spotify"
+        );
     }
 
     #[test]

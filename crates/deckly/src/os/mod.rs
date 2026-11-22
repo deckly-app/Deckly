@@ -8,6 +8,7 @@
 pub mod active_window;
 pub mod applications;
 pub mod autostart;
+pub mod close;
 pub mod elevate;
 pub mod instance;
 pub mod main_thread;

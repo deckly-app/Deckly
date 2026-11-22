@@ -45,6 +45,7 @@ Rules (see `AGENTS.md` for the full version):
 | 2026-11-07 | [Global wallpaper](2026-11-07-global-wallpaper.md) | Global wallpaper in Preferences > Style, the global, profile, page order and opt-outs, backups |
 | 2026-11-07 | [Feedback marks](2026-11-07-feedback-marks.md) | Failure and success marks and the Auto Exit ring styled in Preferences > Style, global only, hidden marks, backups |
 | 2026-11-14 | [Stream Deck plugin CLI and getting-started flow](2026-11-14-stream-deck-cli.md) | `create`, `link`, `restart`, `validate`, `pack`, the watch loop, what a plugin author writes, the Linux failure |
+| 2026-11-22 | [Close action](2026-11-22-close-action.md) | Closing an application's windows or ending its process, per platform |
 
 ## Open questions
 
