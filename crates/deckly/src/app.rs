@@ -121,6 +121,9 @@ enum FolderNav {
 /// What the canvas shows: a page, or a folder opened from it.
 struct View {
     page: usize,
+    /// The pinned actions are on the canvas, or the folders were opened
+    /// from them.
+    pinned: bool,
     /// Open folders, outermost first.
     path: Vec<String>,
     live: Live,
@@ -130,24 +133,64 @@ impl View {
     fn location(&self, key: Option<u8>) -> Location {
         Location {
             page: self.page,
+            pinned: self.pinned,
             path: self.path.clone(),
             key,
         }
     }
 
-    /// The page or folder on the canvas.
+    /// The page, folder or pinned actions on the canvas.
     fn shown<'a>(&self, profile: &'a Profile) -> Option<&'a Page> {
         match self.path.last() {
             Some(id) => profile.folder(id),
+            None if self.pinned => profile.pinned.as_ref(),
             None => profile.pages.get(self.page),
         }
     }
 
+    /// The keys of what is on the canvas, its own ones without pinned keys.
     fn keys<'a>(&self, profile: &'a mut Profile) -> Option<&'a mut BTreeMap<u8, KeyConfig>> {
         match self.path.last() {
             Some(id) => profile.folder_mut(id).map(|f| &mut f.keys),
+            // Emptied pinned actions are dropped before the profile is kept.
+            None if self.pinned => Some(&mut profile.pinned.get_or_insert_with(Page::new).keys),
             None => profile.pages.get_mut(self.page).map(|p| &mut p.keys),
         }
+    }
+
+    /// The canvas shows the pinned actions themselves.
+    fn on_pinned(&self) -> bool {
+        self.pinned && self.path.is_empty()
+    }
+
+    /// The id of what is on the canvas.
+    fn page_id(&self, profile: &Profile) -> String {
+        self.shown(profile)
+            .map(|p| p.id.clone())
+            .unwrap_or_default()
+    }
+
+    /// The key at `index` as the canvas shows it, pinned keys included.
+    fn key<'a>(&self, profile: &'a Profile, index: u8) -> Option<deckly_core::ShownKey<'a>> {
+        profile.resolve(self.shown(profile)?, index)
+    }
+
+    /// The key at `index` to edit: the canvas's own key, else the key pinned
+    /// there, which is the same on every page.
+    fn key_mut<'a>(&self, profile: &'a mut Profile, index: u8) -> Option<&'a mut KeyConfig> {
+        let pinned = self.key(profile, index).is_some_and(|k| k.pinned) && !self.on_pinned();
+        if pinned {
+            profile.pinned.as_mut()?.keys.get_mut(&index)
+        } else {
+            self.keys(profile)?.get_mut(&index)
+        }
+    }
+
+    /// The id plugins know the key at `index` by: the page that keeps it.
+    fn owner(&self, profile: &Profile, index: u8) -> String {
+        self.key(profile, index)
+            .map(|k| k.page.id.clone())
+            .unwrap_or_else(|| self.page_id(profile))
     }
 }
 
@@ -172,7 +215,20 @@ enum DragPayload {
 
 enum KeyCommand {
     Copy(u8),
-    Paste(u8, KeyClipboard),
+    Paste(u8, Box<KeyClipboard>),
+}
+
+/// Pin the key at a place of a page or folder, or unpin the key pinned there
+/// onto a page or folder.
+enum PinCommand {
+    Pin(u8, String),
+    Unpin(u8, String),
+}
+
+/// Whether what is on the canvas has a key of its own at `index`.
+fn keys_has(profile: &Profile, view: &View, index: u8) -> bool {
+    view.shown(profile)
+        .is_some_and(|p| p.keys.contains_key(&index))
 }
 
 struct PendingPaste {
@@ -216,6 +272,8 @@ pub struct App {
     selected_device: Option<String>,
     offline_profile: Option<String>,
     selected_key: Option<u8>,
+    /// The profile whose pinned actions are on the canvas.
+    pinned_view: Option<String>,
     /// Open while `selected_key` holds actions and is being edited.
     group: Option<GroupEdit>,
     /// The action of the open group key; the list shows what fits in it.
@@ -303,6 +361,7 @@ impl App {
             selected_device: None,
             offline_profile: None,
             selected_key: None,
+            pinned_view: None,
             group: None,
             group_holder: None,
             search: String::new(),
@@ -1211,22 +1270,43 @@ impl App {
         let mut changed = false;
         let mut open_group = false;
         let mut command = None;
+        let mut pin_command = None;
         let live = view.live;
-        let page_id = view
-            .path
-            .last()
-            .cloned()
-            .or_else(|| profile.pages.get(view.page).map(|p| p.id.clone()))
-            .unwrap_or_default();
-        let overlays: HashMap<u8, Overlay> = match view.keys(profile) {
-            Some(keys) => {
+        if view.on_pinned() {
+            profile.pinned.get_or_insert_with(Page::new);
+        }
+        let page_id = view.page_id(profile);
+        let overlays: HashMap<u8, Overlay> = match view.shown(profile) {
+            Some(page) => {
                 let s = runtime::lock(&self.state);
-                keys.iter()
-                    .filter_map(|(&i, k)| Some((i, s.overlay(&plugins::context(&page_id, i), k)?)))
+                profile
+                    .shown_keys(page)
+                    .into_iter()
+                    .filter_map(|(i, k)| {
+                        Some((i, s.overlay(&plugins::context(&k.page.id, i), k.key)?))
+                    })
                     .collect()
             }
             None => HashMap::new(),
         };
+        // Pinned keys show, dimmed, where the canvas has no key of its own.
+        let pins: BTreeMap<u8, KeyConfig> = profile
+            .pinned
+            .as_ref()
+            .map(|p| p.keys.clone())
+            .unwrap_or_default();
+        let ghosts = if view.on_pinned() {
+            BTreeMap::new()
+        } else {
+            pins.clone()
+        };
+        // Unpinning on the pinned actions puts the key on the current page.
+        let unpin_page = profile.pages.get(view.page).map(|p| {
+            (
+                p.id.clone(),
+                p.keys.keys().copied().collect::<HashSet<u8>>(),
+            )
+        });
         if overlays
             .values()
             .any(|o| self.renderer.shown_mark(Some(o)).is_some())
@@ -1238,7 +1318,10 @@ impl App {
             .shown(profile)
             .and_then(|p| profile.wallpaper_of(p, global.as_ref()))
             .map(|(w, _)| w.clone());
-        self.wallpaper_button(ui, &geo, profile, view, wallpaper.is_some());
+        // Pinned actions show on pages that bring their own wallpaper.
+        if !view.on_pinned() {
+            self.wallpaper_button(ui, &geo, profile, view, wallpaper.is_some());
+        }
         let Some(keys) = view.keys(profile) else {
             return;
         };
@@ -1256,6 +1339,7 @@ impl App {
             let rect = Rect::from_min_size(min, Vec2::splat(key_size));
             let response = ui.interact(rect, ui.id().with(("key", index)), Sense::click_and_drag());
             let config = keys.get(&index).cloned();
+            let ghost = ghosts.get(&index).filter(|_| config.is_none());
             // The parent folder key stays in its folder; it can only move.
             let placed = config
                 .as_ref()
@@ -1295,6 +1379,24 @@ impl App {
                     if key.protect.is_some() {
                         protect_badge(&painter, inner);
                     }
+                }
+                None if let Some(key) = ghost => {
+                    let tex = self.texture(
+                        ui.ctx(),
+                        Some(key),
+                        tex_px,
+                        Live {
+                            pressed: pressed.contains(&index),
+                            ..live
+                        },
+                        overlays.get(&index),
+                        backdrop,
+                    );
+                    painter.add(
+                        egui::epaint::RectShape::filled(inner, inner_radius, PINNED_TINT)
+                            .with_texture(tex, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+                    );
+                    pin_badge(&painter, inner);
                 }
                 // An empty key shows its piece of the wallpaper.
                 None if backdrop.is_some() => {
@@ -1348,7 +1450,7 @@ impl App {
             }
             // Double-clicking a folder opens it, as in the official app.
             if response.double_clicked()
-                && let Some(key) = &config
+                && let Some(key) = config.as_ref().or(ghost)
             {
                 if placed {
                     self.folder_nav = Some(FolderNav::Up);
@@ -1363,7 +1465,7 @@ impl App {
             }
             response.context_menu(|ui| {
                 // A blank key can become a Multi Action or Key Logic key.
-                if config.is_none() {
+                if config.is_none() && ghost.is_none() {
                     for (uuid, text) in [
                         (actions::MULTI_ACTION, "Create Multi Action"),
                         (actions::KEY_LOGIC, "Create Key Logic Action"),
@@ -1384,7 +1486,7 @@ impl App {
                 }
                 if ui
                     .add_enabled(
-                        config.is_some() && !placed,
+                        (config.is_some() || ghost.is_some()) && !placed,
                         egui::Button::new(format!("{}  Copy", icon::COPY)).shortcut_text(
                             ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
                                 egui::Modifiers::COMMAND,
@@ -1410,7 +1512,7 @@ impl App {
                     .clicked()
                 {
                     if let Some(c) = self.clipboard.clone() {
-                        command = Some(KeyCommand::Paste(index, c));
+                        command = Some(KeyCommand::Paste(index, Box::new(c)));
                     }
                     ui.close();
                 }
@@ -1424,6 +1526,57 @@ impl App {
                     keys.remove(&index);
                     changed = true;
                     ui.close();
+                }
+                ui.separator();
+                if ghost.is_some() {
+                    if ui
+                        .button(format!("{}  Unpin Action", icon::PUSH_PIN_SLASH))
+                        .on_hover_text(
+                            "Moves the action onto this page; other pages no longer show it",
+                        )
+                        .clicked()
+                    {
+                        pin_command = Some(PinCommand::Unpin(index, page_id.clone()));
+                        ui.close();
+                    }
+                } else if view.on_pinned() {
+                    let target = unpin_page
+                        .as_ref()
+                        .filter(|(_, taken)| !taken.contains(&index));
+                    let resp = ui
+                        .add_enabled(
+                            config.is_some() && target.is_some(),
+                            egui::Button::new(format!("{}  Unpin Action", icon::PUSH_PIN_SLASH)),
+                        )
+                        .on_hover_text("Moves the action onto the current page")
+                        .on_disabled_hover_text(
+                            "The current page has its own action at this place",
+                        );
+                    if resp.clicked()
+                        && let Some((target, _)) = target
+                    {
+                        pin_command = Some(PinCommand::Unpin(index, target.clone()));
+                        ui.close();
+                    }
+                } else {
+                    let resp = ui
+                        .add_enabled(
+                            config.is_some() && !placed && !pins.contains_key(&index),
+                            egui::Button::new(format!("{}  Pin Action", icon::PUSH_PIN)),
+                        )
+                        .on_hover_text(
+                            "Shows the action at this place on every page and folder of the \
+                             profile that has no action there",
+                        )
+                        .on_disabled_hover_text(if pins.contains_key(&index) {
+                            "Another action is pinned at this place"
+                        } else {
+                            "Only an action on a key can be pinned"
+                        });
+                    if resp.clicked() {
+                        pin_command = Some(PinCommand::Pin(index, page_id.clone()));
+                        ui.close();
+                    }
                 }
                 if let Some(key) = keys
                     .get_mut(&index)
@@ -1473,11 +1626,40 @@ impl App {
         {
             changed = true;
         }
+        if let Some(pin) = pin_command {
+            let done = match &pin {
+                PinCommand::Pin(index, page) => profile.pin(page, *index),
+                PinCommand::Unpin(index, page) => profile.unpin(*index, page),
+            };
+            match done {
+                Ok(()) => changed = true,
+                Err(e) => runtime::lock(&self.state).notify(e.to_string()),
+            }
+        }
         if changed {
             self.mark_dirty(&profile.id);
         }
+        // A pinned key is copied from the pinned actions.
+        let pinned_now = profile.pinned.as_ref().map(|p| p.id.clone());
+        let ghost_shown: HashSet<u8> = match (&profile.pinned, view.on_pinned()) {
+            (Some(pinned), false) => pinned
+                .keys
+                .keys()
+                .copied()
+                .filter(|&i| !keys_has(profile, view, i))
+                .collect(),
+            _ => HashSet::new(),
+        };
+        let copy_from = |index: u8| match &pinned_now {
+            Some(pinned) if ghost_shown.contains(&index) => pinned.clone(),
+            _ => page_id.clone(),
+        };
         if let Some(command) = command {
-            self.key_command(ui.ctx(), profile, &page_id, view.path.len(), command);
+            let from = match &command {
+                KeyCommand::Copy(index) => copy_from(*index),
+                KeyCommand::Paste(..) => page_id.clone(),
+            };
+            self.key_command(ui.ctx(), profile, &from, view.path.len(), command);
         }
         // winit maps Ctrl (Windows/Linux) or Cmd (macOS) to these events,
         // including the physical-key fallback for non-Latin layouts.
@@ -1489,7 +1671,7 @@ impl App {
                 egui::Event::Copy => self.key_command(
                     ui.ctx(),
                     profile,
-                    &page_id,
+                    &copy_from(index),
                     view.path.len(),
                     KeyCommand::Copy(index),
                 ),
@@ -1499,7 +1681,7 @@ impl App {
                         profile,
                         &page_id,
                         view.path.len(),
-                        KeyCommand::Paste(index, copy),
+                        KeyCommand::Paste(index, Box::new(copy)),
                     ),
                     Ok(None) => {}
                     Err(e) => runtime::lock(&self.state).notify(e),
@@ -1509,7 +1691,7 @@ impl App {
         }
 
         if view.path.is_empty() {
-            self.pager(ui, &geo, profile, &mut view.page);
+            self.pager(ui, &geo, profile, &mut view.page, &mut view.pinned);
         } else {
             self.folder_strip(ui, &geo, profile, view);
         }
@@ -1604,6 +1786,7 @@ impl App {
         geo: &CanvasGeometry,
         profile: &mut Profile,
         page: &mut usize,
+        pinned: &mut bool,
     ) {
         const CHIP: f32 = 30.0;
         const HEIGHT: f32 = 20.0;
@@ -1615,7 +1798,8 @@ impl App {
             .min(pages.saturating_sub(WINDOW));
         let shown = first..pages.min(first + WINDOW);
         let can_add = pages < deckly_core::profile::MAX_PAGES;
-        let width = shown.len() as f32 * CHIP + if can_add { 26.0 } else { 0.0 } + 4.0;
+        // The pinned actions come first, left of the page numbers.
+        let width = (shown.len() + 1) as f32 * CHIP + if can_add { 26.0 } else { 0.0 } + 4.0;
         let strip = Rect::from_center_size(
             pos2(
                 geo.grid.center().x,
@@ -1626,14 +1810,44 @@ impl App {
         let painter = ui.painter().clone();
         painter.rect_filled(strip, CornerRadius::same(10), PAGER);
         let mut new_page = *page;
+        let mut new_pinned = *pinned;
         let mut delete = None;
+        {
+            let r = Rect::from_min_size(pos2(strip.left() + 2.0, strip.top()), vec2(CHIP, HEIGHT));
+            let resp = ui
+                .interact(r, ui.id().with("pinned-page"), Sense::click())
+                .on_hover_text(
+                    "Pinned actions: each shows at its place on every page and folder \
+                     of this profile that has no action there",
+                );
+            if *pinned {
+                painter.rect_filled(r.shrink2(vec2(1.0, 1.0)), CornerRadius::same(9), PAGER_CHIP);
+            }
+            let color = if *pinned {
+                PAGER_CHIP_TEXT
+            } else if resp.hovered() {
+                TEXT
+            } else {
+                TEXT_DIM
+            };
+            painter.text(
+                r.center(),
+                Align2::CENTER_CENTER,
+                icon::PUSH_PIN,
+                font(13.0),
+                color,
+            );
+            if resp.clicked() {
+                new_pinned = true;
+            }
+        }
         for (slot, i) in shown.enumerate() {
             let r = Rect::from_min_size(
-                pos2(strip.left() + 2.0 + slot as f32 * CHIP, strip.top()),
+                pos2(strip.left() + 2.0 + (slot + 1) as f32 * CHIP, strip.top()),
                 vec2(CHIP, HEIGHT),
             );
             let mut resp = ui.interact(r, ui.id().with(("page", i)), Sense::click());
-            let current = i == *page;
+            let current = i == *page && !*pinned;
             if current {
                 painter.rect_filled(r.shrink2(vec2(1.0, 1.0)), CornerRadius::same(9), PAGER_CHIP);
             }
@@ -1667,6 +1881,7 @@ impl App {
             }
             if resp.clicked() {
                 new_page = i;
+                new_pinned = false;
             }
             resp.context_menu(|ui| {
                 if ui
@@ -1700,6 +1915,7 @@ impl App {
             if resp.clicked() {
                 profile.pages.insert(*page + 1, Page::new());
                 new_page = *page + 1;
+                new_pinned = false;
                 self.mark_dirty(&profile.id);
             }
         }
@@ -1716,8 +1932,9 @@ impl App {
             };
             self.mark_dirty(&profile.id);
         }
-        if new_page != *page || delete.is_some() {
+        if new_page != *page || new_pinned != *pinned || delete.is_some() {
             *page = new_page.min(profile.pages.len().saturating_sub(1));
+            *pinned = new_pinned;
             self.selected_key = None;
             self.recording_hotkey = false;
         }
@@ -1793,7 +2010,8 @@ impl App {
     fn check_group(&mut self, profile: &mut Profile, view: &View) {
         let holder = self
             .selected_key
-            .and_then(|k| view.keys(profile)?.get(&k))
+            .and_then(|k| view.key(profile, k))
+            .map(|k| k.key)
             .filter(|k| !k.groups.is_empty());
         match (holder, &mut self.group) {
             (Some(key), Some(group)) => {
@@ -1817,13 +2035,10 @@ impl App {
         let (Some(index), Some(group)) = (self.selected_key, self.group) else {
             return;
         };
-        let Some(keys) = view.keys(profile) else {
-            return;
-        };
         match group.member {
             Some(member) => {
-                if let Some(list) = keys
-                    .get_mut(&index)
+                if let Some(list) = view
+                    .key_mut(profile, index)
                     .and_then(|k| k.groups.get_mut(group.list))
                     && member < list.len()
                 {
@@ -1831,7 +2046,13 @@ impl App {
                 }
             }
             None => {
-                keys.remove(&index);
+                // A pinned key goes from every page that shows it.
+                let pinned = view.key(profile, index).is_some_and(|k| k.pinned);
+                if pinned && let Some(p) = &mut profile.pinned {
+                    p.keys.remove(&index);
+                } else if let Some(keys) = view.keys(profile) {
+                    keys.remove(&index);
+                }
                 self.group = None;
             }
         }
@@ -1846,17 +2067,13 @@ impl App {
         let (Some(index), Some(mut group)) = (self.selected_key, self.group) else {
             return;
         };
-        let page_id = view
-            .path
-            .last()
-            .cloned()
-            .or_else(|| profile.pages.get(view.page).map(|p| p.id.clone()))
-            .unwrap_or_default();
+        // Plugins know a pinned key by the pinned actions' id.
+        let page_id = view.owner(profile, index);
         let live = view.live;
         let area = ui.max_rect();
         let mut remove = false;
         let device = profile.device;
-        let Some(key) = view.keys(profile).and_then(|k| k.get_mut(&index)) else {
+        let Some(key) = view.key_mut(profile, index) else {
             return;
         };
         let before = key.clone();
@@ -2264,12 +2481,11 @@ impl App {
     fn inspector(&mut self, ui: &mut Ui, profile: &mut Profile, view: &View) {
         let panel = ui.max_rect();
         let profile_id = profile.id.clone();
-        let page_id = view
-            .path
-            .last()
-            .cloned()
-            .or_else(|| profile.pages.get(view.page).map(|p| p.id.clone()))
-            .unwrap_or_default();
+        // A pinned key is kept, and known to plugins, by the pinned actions.
+        let page_id = match self.selected_key {
+            Some(index) => view.owner(profile, index),
+            None => view.page_id(profile),
+        };
         let profiles: Vec<(String, String)> = runtime::lock(&self.state)
             .profiles
             .iter()
@@ -3138,6 +3354,7 @@ impl App {
                 // Input not saved yet belongs to the settings undo replaced.
                 self.key_form = Default::default();
                 view.page = location.page.min(profile.pages.len().saturating_sub(1));
+                view.pinned = location.pinned;
                 view.path = location.path;
                 view.live.page = view.page + 1;
                 self.selected_key = location.key.filter(|k| *k < profile.model().key_count());
@@ -3188,14 +3405,14 @@ impl App {
                 }
                 self.selected_key = Some(index);
                 self.recording_hotkey = false;
-                self.clipboard = Some(copy.clone());
+                self.clipboard = Some((*copy).clone());
                 if let Some(original) = original {
                     self.pending_paste = Some(PendingPaste {
                         profile: profile.id.clone(),
                         page: page_id.to_owned(),
                         index,
                         original: original.clone(),
-                        clipboard: copy,
+                        clipboard: *copy,
                     });
                     ctx.request_repaint();
                 } else {
@@ -3277,12 +3494,8 @@ impl App {
         let Some(pending) = self.pending_paste.take() else {
             return;
         };
-        let page_id = view
-            .path
-            .last()
-            .map(String::as_str)
-            .or_else(|| profile.pages.get(view.page).map(|p| p.id.as_str()))
-            .unwrap_or_default();
+        let page_id = view.page_id(profile);
+        let page_id = page_id.as_str();
         if !pending.matches(profile, page_id) {
             runtime::lock(&self.state).notify("Paste cancelled: the destination changed");
             return;
@@ -3758,6 +3971,7 @@ impl eframe::App for App {
                     p.clone(),
                     View {
                         page: s.page(p),
+                        pinned: self.pinned_view.as_deref() == Some(p.id.as_str()),
                         path: s.folder_path(p),
                         live: s.live(p),
                     },
@@ -3870,6 +4084,10 @@ impl eframe::App for App {
         self.paste_confirmation(&ctx, &mut profile, &view);
         self.folder_exit_confirmation(&ctx, &mut profile, &view);
         let wallpaper_edit = self.wallpaper_window(&ctx, &mut profile);
+        // Showing the empty pinned actions is no edit.
+        if profile.pinned.as_ref().is_some_and(|p| p.keys.is_empty()) {
+            profile.pinned = None;
+        }
 
         // Write the edited copy back. Profile switches made this frame
         // already changed which profile is current; only write if it still
@@ -3886,6 +4104,7 @@ impl eframe::App for App {
             original_location,
             group,
         );
+        self.pinned_view = view.pinned.then(|| profile.id.clone());
         if profile != original || view.page != original_page || view.path != original_path {
             let mut s = runtime::lock(&self.state);
             if let Some(p) = s.profile_mut(&profile.id) {
@@ -3927,13 +4146,8 @@ impl eframe::App for App {
         }
         // The settings window follows the selected key.
         if let Some(host) = &self.host {
-            let page_id = view
-                .path
-                .last()
-                .cloned()
-                .or_else(|| profile.pages.get(view.page).map(|p| p.id.clone()))
-                .unwrap_or_default();
             let selected = self.selected_key.and_then(|k| {
+                let page_id = view.owner(&profile, k);
                 let key = edited_key(&mut profile, &view, k, self.group)?;
                 Some((edited_context(&page_id, k, self.group), key.action.clone()))
             });
@@ -4385,6 +4599,20 @@ fn protect_controls(ui: &mut Ui, setting: &mut Option<Protection>) {
 }
 
 /// Marks a protected key in the editor's grid.
+/// Marks a pinned key shown on a page that has no key of its own there.
+fn pin_badge(painter: &egui::Painter, key: Rect) {
+    let radius = (key.width() * 0.12).clamp(7.0, 11.0);
+    let center = pos2(key.left() + radius + 3.0, key.top() + radius + 3.0);
+    painter.circle_filled(center, radius, Color32::from_black_alpha(200));
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        icon::PUSH_PIN,
+        font(radius * 1.3),
+        TEXT,
+    );
+}
+
 fn protect_badge(painter: &egui::Painter, key: Rect) {
     let radius = (key.width() * 0.12).clamp(7.0, 11.0);
     let center = pos2(key.right() - radius - 3.0, key.top() + radius + 3.0);
@@ -4537,7 +4765,7 @@ fn edited_key<'a>(
     index: u8,
     group: Option<GroupEdit>,
 ) -> Option<&'a mut KeyConfig> {
-    let key = view.keys(profile)?.get_mut(&index)?;
+    let key = view.key_mut(profile, index)?;
     match group {
         Some(GroupEdit {
             list,
@@ -5126,6 +5354,7 @@ mod auto_exit_tests {
         profile.folder_mut(&folder).unwrap().keys.insert(1, key);
         app.selected_key = Some(1);
         let view = View {
+            pinned: false,
             page: 0,
             path: vec![folder],
             live: Live::default(),
@@ -5233,6 +5462,7 @@ mod auto_exit_tests {
         profile.folder_mut(&inner).unwrap().keys.insert(1, action);
         let original = profile.clone();
         let mut view = View {
+            pinned: false,
             page: 0,
             path: vec![outer.clone()],
             live: Live::default(),
@@ -5291,6 +5521,7 @@ mod key_image_tests {
         events: Vec<egui::Event>,
     ) -> Vec<egui::epaint::ClippedShape> {
         let mut view = View {
+            pinned: false,
             page: 0,
             path: Vec::new(),
             live: Live::default(),
@@ -5411,6 +5642,7 @@ mod clipboard_tests {
             selected_device: None,
             offline_profile: None,
             selected_key: Some(0),
+            pinned_view: None,
             group: None,
             group_holder: None,
             search: String::new(),
@@ -5458,6 +5690,7 @@ mod clipboard_tests {
         text_focus: bool,
     ) -> Vec<egui::epaint::ClippedShape> {
         let mut view = View {
+            pinned: false,
             page: 0,
             path: Vec::new(),
             live: Live::default(),
@@ -5495,6 +5728,112 @@ mod clipboard_tests {
                 ..Default::default()
             },
         }
+    }
+
+    /// Runs `edit` as the editor would within one frame, so it is recorded.
+    fn edit_frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        profile: &mut Profile,
+        edit: impl FnOnce(&mut Profile),
+    ) {
+        let mut view = View {
+            pinned: false,
+            page: 0,
+            path: Vec::new(),
+            live: Live::default(),
+        };
+        let mut edit = Some(edit);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {
+            let original = profile.clone();
+            let original_location = view.location(app.selected_key);
+            if let Some(edit) = edit.take() {
+                edit(profile);
+            }
+            app.finish_edit(ctx, profile, &mut view, &original, original_location, None);
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn pin_override_and_unpin_are_undone_and_redone() {
+        let ctx = egui::Context::default();
+        ctx.set_os(egui::os::OperatingSystem::Windows);
+        apply(&ctx);
+        let mut app = editor();
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        let key = KeyConfig::new(actions::WEBSITE, json!({"url": "https://example.com"}));
+        profile.pages[0].keys.insert(1, key.clone());
+        let page = profile.pages[0].id.clone();
+        let undo = || shortcut(egui::Key::Z, false, false);
+        let redo = || shortcut(egui::Key::Y, false, false);
+
+        edit_frame(&ctx, &mut app, &mut profile, |p| p.pin(&page, 1).unwrap());
+        assert_eq!(profile.pinned_key(1), Some(&key));
+        frame(&ctx, &mut app, &mut profile, vec![undo()], false);
+        assert_eq!(profile.pinned, None);
+        assert_eq!(profile.pages[0].keys[&1], key);
+        frame(&ctx, &mut app, &mut profile, vec![redo()], false);
+        assert_eq!(profile.pinned_key(1), Some(&key));
+
+        // Copying the pinned key on a page copies the pin; pasting it there
+        // is a key of the page's own that overrides the pin.
+        app.selected_key = Some(1);
+        frame(&ctx, &mut app, &mut profile, vec![egui::Event::Copy], false);
+        assert_eq!(app.clipboard.as_ref().and_then(|c| c.key()), Some(&key));
+        let other = KeyConfig::new(actions::TEXT, json!({}));
+        let copy = KeyClipboard::of_key(profile.device, &other);
+        frame(
+            &ctx,
+            &mut app,
+            &mut profile,
+            vec![egui::Event::Paste(copy.text().unwrap())],
+            false,
+        );
+        assert_eq!(profile.pages[0].keys[&1].action, actions::TEXT);
+        assert_eq!(profile.pinned_key(1), Some(&key), "the pin stays");
+        frame(&ctx, &mut app, &mut profile, vec![undo()], false);
+        assert!(!profile.pages[0].keys.contains_key(&1));
+        assert_eq!(profile.pinned_key(1), Some(&key));
+
+        edit_frame(&ctx, &mut app, &mut profile, |p| p.unpin(1, &page).unwrap());
+        assert_eq!(profile.pinned, None);
+        frame(&ctx, &mut app, &mut profile, vec![undo()], false);
+        assert_eq!(profile.pinned_key(1), Some(&key));
+        assert!(!profile.pages[0].keys.contains_key(&1));
+    }
+
+    #[test]
+    fn the_inspector_edits_the_pin_under_an_empty_key() {
+        let mut profile = Profile::new("Test", DeviceKind::Mk2);
+        profile.add_page();
+        profile.pages[0]
+            .keys
+            .insert(3, KeyConfig::new(actions::TEXT, json!({})));
+        let first = profile.pages[0].id.clone();
+        profile.pin(&first, 3).unwrap();
+        let pinned = profile.pinned.as_ref().unwrap().id.clone();
+        let view = View {
+            pinned: false,
+            page: 1,
+            path: Vec::new(),
+            live: Live::default(),
+        };
+        assert_eq!(view.owner(&profile, 3), pinned);
+        assert_eq!(view.owner(&profile, 4), profile.pages[1].id);
+        edited_key(&mut profile, &view, 3, None).unwrap().title = "Shared".into();
+        assert_eq!(profile.pinned_key(3).unwrap().title, "Shared");
+        assert!(profile.pages[1].keys.is_empty());
+        // On the pinned actions themselves the keys are their own.
+        let on_pinned = View {
+            pinned: true,
+            page: 1,
+            path: Vec::new(),
+            live: Live::default(),
+        };
+        assert!(on_pinned.on_pinned());
+        assert_eq!(on_pinned.page_id(&profile), pinned);
+        assert_eq!(on_pinned.key(&profile, 3).map(|k| k.pinned), Some(true));
     }
 
     #[test]
@@ -5600,6 +5939,7 @@ mod clipboard_tests {
         assert_eq!(profile, edited);
         app.recording_hotkey = false;
         let mut view = View {
+            pinned: false,
             page: 0,
             path: Vec::new(),
             live: Live::default(),
@@ -5787,6 +6127,7 @@ mod clipboard_tests {
             events: Vec<egui::Event>,
         ) -> Vec<egui::epaint::ClippedShape> {
             let view = View {
+                pinned: false,
                 page: 0,
                 path: Vec::new(),
                 live: Live::default(),

@@ -310,6 +310,8 @@ pub fn convert(
         wallpaper_disabled: false,
         pages,
         folders,
+        // Where the official format keeps pinned actions is not known yet.
+        pinned: None,
         applications: Vec::new(),
     };
     profile.sanitize();

@@ -12,19 +12,11 @@ pub struct KeyClipboard {
 }
 
 pub fn page<'a>(profile: &'a Profile, id: &str) -> Option<&'a Page> {
-    profile
-        .pages
-        .iter()
-        .chain(&profile.folders)
-        .find(|p| p.id == id)
+    profile.all_pages().find(|p| p.id == id)
 }
 
 fn page_mut<'a>(profile: &'a mut Profile, id: &str) -> Option<&'a mut Page> {
-    profile
-        .pages
-        .iter_mut()
-        .chain(&mut profile.folders)
-        .find(|p| p.id == id)
+    profile.all_pages_mut().find(|p| p.id == id)
 }
 
 impl KeyClipboard {

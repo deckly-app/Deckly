@@ -137,7 +137,11 @@ impl State {
         {
             return false;
         }
-        let Some(key) = self.shown(profile).and_then(|p| p.keys.get(&source.index)) else {
+        let Some(key) = self
+            .shown(profile)
+            .and_then(|p| profile.resolve(p, source.index))
+            .map(|k| k.key)
+        else {
             return false;
         };
         key.action == source.action
