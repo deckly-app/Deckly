@@ -41,7 +41,10 @@ Planned features, chosen by the project owner on 2026-11-02.
 
 - [ ] Close
 - [ ] Hotkey Switch
-- [ ] Timer
+- [x] Timer
+      Done: System > Timer counts down on the key and in the editor, with
+      cancellation and an optional chime. Exact official parity and import
+      still need a sample from the original app.
 - [ ] Play Audio
 - [ ] Soundboard
 

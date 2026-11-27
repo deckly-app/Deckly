@@ -14,6 +14,8 @@ serde.workspace = true
 serde_json.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "wayland", "wgpu", "x11"] }
 egui-phosphor = "0.14.0"
+# Output only: the timer chime is generated, so it needs no codecs.
+rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 # Key image rendering: decode custom PNG/JPEG images and the WebP and GIF
 # pictures of imported profiles, encode device JPEGs (and BMPs for the Mini
 # family).

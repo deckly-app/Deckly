@@ -11,6 +11,7 @@ pkgbase = deckly-bin
 	depends = gtk3
 	depends = webkit2gtk-4.1
 	depends = libxkbcommon
+	depends = alsa-lib
 	depends = hicolor-icon-theme
 	optdepends = vulkan-icd-loader: GPU drawing through Vulkan
 	optdepends = nodejs: run Node.js plugins

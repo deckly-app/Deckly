@@ -29,6 +29,7 @@ pub const MULTI_ACTION_SWITCH: &str = deckly_core::profile::MULTI_ACTION_SWITCH;
 pub const RANDOM_ACTION: &str = deckly_core::profile::RANDOM_ACTION;
 pub const KEY_LOGIC: &str = deckly_core::profile::KEY_LOGIC;
 pub const DELAY: &str = deckly_core::profile::DELAY_ACTION;
+pub const TIMER: &str = deckly_core::profile::TIMER_ACTION;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -162,6 +163,14 @@ pub const ACTIONS: &[ActionDef] = &[
         icon: icon::PLAY_PAUSE,
         tooltip: "Media playback and volume keys",
         defaults: || json!({ "media": "play_pause" }),
+    },
+    ActionDef {
+        uuid: TIMER,
+        name: "Timer",
+        category: Category::System,
+        icon: icon::TIMER,
+        tooltip: "Count down on a key and optionally play a chime",
+        defaults: || crate::timer::Config::default().settings(),
     },
     // Navigation, in the official list's order.
     ActionDef {
@@ -414,6 +423,7 @@ pub enum Outcome {
     Brightness(BrightnessChange),
     /// Sleep now, as if Sleep After had run out.
     Sleep,
+    Timer(crate::timer::Config),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,6 +501,7 @@ pub fn run(key: &KeyConfig) -> Result<Outcome, String> {
         PARENT_FOLDER => Ok(Outcome::ParentFolder),
         // Only shows the page number; Delay is waited for by the sequence.
         PAGE_INDICATOR | DELAY => Ok(Outcome::Done),
+        TIMER => Ok(Outcome::Timer(crate::timer::Config::read(s))),
         BRIGHTNESS => {
             let value = int_setting(s, "value", 10).clamp(0, 100) as u8;
             let change = match str_setting(s, "mode") {
@@ -596,6 +607,9 @@ mod tests {
         );
         assert!(names(None).contains(&"Multi Action"));
         assert!(!names(None).contains(&"Delay"));
+        assert!(listed(TIMER, None));
+        assert!(!listed(TIMER, Some(MULTI_ACTION)));
+        assert!(!listed(TIMER, Some(KEY_LOGIC)));
     }
 
     #[test]
@@ -615,6 +629,7 @@ mod tests {
                 "Close",
                 "Text",
                 "Multimedia",
+                "Timer",
                 "Brightness"
             ]
         );

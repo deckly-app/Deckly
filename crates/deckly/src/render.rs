@@ -9,6 +9,7 @@ use crate::animation::{self, Animation};
 use crate::fonts::{self, Face};
 use crate::plugins::{self, Mark, Overlay, PageTile, ShownFace};
 use crate::protect::Look;
+use crate::timer;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
 use deckly_core::{
     DeviceModel, FeedbackMarks, ImageFormat, KeyConfig, KeyPress, MarkStyle, Orientation,
@@ -60,6 +61,8 @@ pub struct Live {
     pub frame: u32,
     /// A protected key's gesture in progress.
     pub guard: Option<Look>,
+    /// The countdown shown on this Timer key, if it has been started.
+    pub timer: Option<timer::Display>,
 }
 
 /// A key of a confirmation screen.
@@ -80,6 +83,7 @@ impl Default for Live {
             exit: None,
             frame: 0,
             guard: None,
+            timer: None,
         }
     }
 }
@@ -221,7 +225,7 @@ impl Renderer {
         let mut img = match picture {
             Some(img) => img,
             // A face is drawn on the key's background, without an icon.
-            None if face.is_some() => RgbaImage::new(size, size),
+            None if face.is_some() || key.action == actions::TIMER => RgbaImage::new(size, size),
             None => {
                 let mut img = RgbaImage::new(size, size);
                 if key.action == actions::PAGE_INDICATOR {
@@ -245,6 +249,9 @@ impl Renderer {
                 img = RgbaImage::from_pixel(size, size, Rgba([r, g, b, 255]));
             }
             draw_face(&mut img, face, &style, size, title_shown);
+        }
+        if key.action == actions::TIMER {
+            self.draw_timer(&mut img, key, live.timer, custom.is_none());
         }
         if style.show
             && !title.trim().is_empty()
@@ -277,6 +284,35 @@ impl Renderer {
             self.draw_guard(&mut out, look);
         }
         out
+    }
+
+    fn draw_timer(
+        &self,
+        img: &mut RgbaImage,
+        key: &KeyConfig,
+        display: Option<timer::Display>,
+        icon: bool,
+    ) {
+        let px = img.width() as f32;
+        let (seconds, color) = match display {
+            Some(timer::Display::Running(left)) => (left, [0x85, 0xCF, 0xFF]),
+            Some(timer::Display::Finished) => (0, YES_COLOR),
+            None => (timer::Config::read(&key.settings).seconds, ICON_COLOR),
+        };
+        if icon && let Some(font) = &self.icon_font {
+            draw_icon_raised(img, font, actions::key_icon(key), px * 0.31, color);
+        }
+        if let Some(font) = &self.title_font {
+            let size = if seconds >= 3600 { 0.15 } else { 0.20 };
+            draw_outlined(
+                img,
+                font,
+                &timer::label(seconds),
+                px * size,
+                px * 0.66,
+                color,
+            );
+        }
     }
 
     /// A gesture over the key as the user designed it, at full size even
@@ -410,6 +446,12 @@ impl Renderer {
             }
             if key.action == actions::PAGE_INDICATOR {
                 live.page.hash(&mut h);
+            }
+            if key.action == actions::TIMER {
+                live.timer.hash(&mut h);
+                if live.timer.is_none() {
+                    timer::Config::read(&key.settings).seconds.hash(&mut h);
+                }
             }
             if let Some(percent) = self.shown_exit(key, live) {
                 percent.hash(&mut h);
@@ -2244,6 +2286,37 @@ mod tests {
         assert_eq!(
             r.key_hash(Some(&other), one, None),
             r.key_hash(Some(&other), two, None)
+        );
+    }
+
+    #[test]
+    fn timer_draws_and_hashes_each_second_and_the_finished_state() {
+        let mut r = Renderer::new();
+        let key = KeyConfig::new(actions::TIMER, json!({ "seconds": 60 }));
+        let live = |timer| Live {
+            timer,
+            ..Live::default()
+        };
+        let views = [
+            None,
+            Some(timer::Display::Running(60)),
+            Some(timer::Display::Running(59)),
+            Some(timer::Display::Finished),
+        ];
+        for [a, b] in views.array_windows() {
+            assert_ne!(
+                r.key_hash(Some(&key), live(*a), None),
+                r.key_hash(Some(&key), live(*b), None)
+            );
+            assert_ne!(
+                r.render(Some(&key), 72, live(*a), None),
+                r.render(Some(&key), 72, live(*b), None)
+            );
+        }
+        let different_preset = KeyConfig::new(actions::TIMER, json!({ "seconds": 61 }));
+        assert_ne!(
+            r.key_hash(Some(&key), Live::default(), None),
+            r.key_hash(Some(&different_preset), Live::default(), None)
         );
     }
 

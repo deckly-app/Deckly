@@ -32,6 +32,7 @@ mod secrets;
 mod sequence;
 mod store;
 mod theme;
+mod timer;
 mod transfer;
 mod update;
 mod video;

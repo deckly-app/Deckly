@@ -15,7 +15,7 @@ use crate::plugins::{self, Overlay};
 use crate::protect::{self, Verdict};
 use crate::render::{self, Answer, Live, Renderer};
 use crate::sequence::{self, Press, Step};
-use crate::store;
+use crate::{store, timer};
 use deckly_core::profile::{DEFAULT_PROFILE_NAME, MAX_FOLDER_DEPTH};
 use deckly_core::{
     DeviceKind, DeviceModel, KeyConfig, LockLook, Orientation, Page, Profile, Protection, Settings,
@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 mod folder_exit;
+mod timer_audio;
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -60,6 +61,7 @@ pub struct State {
     /// Shows profiles by the application in the foreground.
     pub follower: Follower,
     folder_exit: folder_exit::Timers,
+    timers: timer::Timers,
 }
 
 impl State {
@@ -81,6 +83,7 @@ impl State {
             choices: crate::forms::Answers::default(),
             globals_version: 0,
             folder_exit: folder_exit::Timers::default(),
+            timers: timer::Timers::default(),
         }
     }
 
@@ -208,9 +211,45 @@ impl State {
             page: self.page(profile) + 1,
             pressed: false,
             exit: self.folder_exit.progress(&profile.id, Instant::now()),
-            frame: 0,
-            guard: None,
+            ..Live::default()
         }
+    }
+
+    pub fn timer_display(
+        &self,
+        handle: Handle,
+        context: &str,
+        key: &KeyConfig,
+        now: Instant,
+    ) -> Option<timer::Display> {
+        (key.action == actions::TIMER)
+            .then(|| {
+                self.timers
+                    .display(handle, context, timer::Config::read(&key.settings), now)
+            })
+            .flatten()
+    }
+
+    fn matches_timer(&self, context: &str, config: timer::Config) -> bool {
+        self.key_at(context).is_some_and(|key| {
+            key.action == actions::TIMER && timer::Config::read(&key.settings) == config
+        })
+    }
+
+    fn prune_timers(&mut self) {
+        let mut timers = std::mem::take(&mut self.timers);
+        timers.retain(|context, config| self.matches_timer(context, config));
+        self.timers = timers;
+    }
+
+    fn update_timers(&mut self, now: Instant) -> (bool, bool) {
+        let mut timers = std::mem::take(&mut self.timers);
+        let mut chime = false;
+        let changed = timers.update(now, |context, config| {
+            chime |= config.chime && self.matches_timer(context, config);
+        });
+        self.timers = timers;
+        (changed, chime)
     }
 
     /// Returns the first profile for this device model, creating a default
@@ -509,6 +548,7 @@ pub enum Msg {
     ActiveWindow(Result<Vec<String>, String>),
     /// An action ended; the context is of the key that shows a failure.
     Outcome(Handle, String, Result<Outcome, String>),
+    TimerAudioFailed(String),
     /// A sequence pressed or released a plugin action.
     PluginStep {
         handle: Handle,
@@ -656,6 +696,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 let _ = device_tx.send(Msg::Device(e));
             }))
         };
+        let alarm = timer_audio::start(action_tx.clone());
         let actions = start_action_worker(action_tx, gate.clone());
         let mut renderer = Renderer::new();
         let mut links: Links = HashMap::new();
@@ -684,7 +725,13 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 // A cancelled countdown takes its ring off the key too.
                 exited || s.folder_exit.deadline() != counting
             };
-            if pressed || followed || exited || guarded {
+            let (timer_changed, chime) = lock(&state).update_timers(Instant::now());
+            if chime
+                && let Err(std::sync::mpsc::TrySendError::Disconnected(())) = alarm.try_send(())
+            {
+                lock(&state).notify("Timer: audio worker unavailable");
+            }
+            if pressed || followed || exited || guarded || timer_changed {
                 refresh(&state, &devices, &mut renderer, &mut links, host.as_ref());
                 repaint();
             }
@@ -746,6 +793,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                     if let Some(serial) = s.device(handle).map(|d| d.serial.clone()) {
                         s.cancel_device_folder_exit(&serial);
                     }
+                    s.timers.remove_device(handle);
                     s.devices.retain(|d| d.handle != handle);
                     s.pressed.retain(|&(h, _)| h != handle);
                     let all = s
@@ -815,6 +863,7 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                     store_standby(&state, &devices, &links, &serial, &image);
                 }
                 Msg::Refresh => {
+                    lock(&state).prune_timers();
                     renderer.clear_image_cache();
                     refresh(&state, &devices, &mut renderer, &mut links, host.as_ref());
                 }
@@ -854,6 +903,10 @@ pub fn start(state: Shared, repaint: Repaint, host: Option<Host>) -> Sender<Msg>
                 Msg::Outcome(handle, context, result) => {
                     apply_outcome(&state, &devices, handle, &context, result);
                     refresh(&state, &devices, &mut renderer, &mut links, host.as_ref());
+                    repaint();
+                }
+                Msg::TimerAudioFailed(e) => {
+                    lock(&state).notify(format!("Timer: could not play the chime: {e}"));
                     repaint();
                 }
                 Msg::PluginStep {
@@ -921,11 +974,12 @@ fn connect(state: &Shared, info: &ConnectedDevice) {
 /// and brightness. A disabled device goes back to its own idle screen.
 /// Changing preferences also wakes a sleeping device.
 fn apply_settings(state: &Shared, devices: &DeviceManager, links: &mut Links) {
-    let s = lock(state);
+    let mut s = lock(state);
     s.gate.set_enabled(s.settings.lock_keys);
     for (&handle, link) in links.iter_mut() {
         let prefs = s.settings.device(&link.serial);
         if !prefs.enabled {
+            s.timers.remove_device(handle);
             if link.enabled {
                 devices.reset(handle);
             }
@@ -1598,6 +1652,7 @@ fn next_wake(state: &Shared, links: &Links, groups: &Groups) -> Option<Instant> 
         .chain(s.next_mark_end())
         .chain(s.follower.deadline())
         .chain(s.folder_exit.deadline())
+        .chain(s.timers.next_wake(Instant::now()))
         // A hidden ring has nothing to redraw.
         .chain(
             s.settings
@@ -1761,6 +1816,15 @@ fn apply_outcome(
     match result {
         // Sleep is handled by the runtime loop, which owns the device links.
         Ok(Outcome::Done | Outcome::Sleep) => {}
+        Ok(Outcome::Timer(config)) => {
+            if !s.gate.blocks(actions::TIMER)
+                && s.settings.device(&serial).enabled
+                && s.matches_timer(context, config)
+                && let Err(e) = s.timers.press(handle, context, config, Instant::now())
+            {
+                s.fail(context, e);
+            }
+        }
         Ok(Outcome::NextPage) => go_to_page(&mut s, (page + 1) % pages.max(1)),
         Ok(Outcome::PreviousPage) => go_to_page(
             &mut s,
@@ -1929,6 +1993,10 @@ fn refresh(
                     };
                     let context = plugins::context(owner, k);
                     let overlay = key.as_ref().and_then(|c| s.overlay(&context, c));
+                    let timer = key
+                        .as_ref()
+                        .filter(|_| !link.asleep)
+                        .and_then(|c| s.timer_display(d.handle, &context, c, now));
                     let shown = key.as_ref().filter(|_| overlay.is_some()).and_then(|c| {
                         let (plugin, _) = s.catalog.action(&c.action)?;
                         let mut instance = s.instance(&context, c);
@@ -1944,6 +2012,7 @@ fn refresh(
                         key,
                         live: Live {
                             pressed,
+                            timer,
                             guard: look.filter(|&(i, _)| i == k).map(|(_, l)| l),
                             ..live
                         },
@@ -2947,6 +3016,72 @@ mod tests {
         let mut key = KeyConfig::new(actions::NEXT_PAGE, json!({}));
         key.protect = Some(protect);
         key
+    }
+
+    #[test]
+    fn a_timer_counts_on_its_key_and_can_finish_on_another_page() {
+        let config = timer::Config {
+            seconds: 5,
+            chime: true,
+        };
+        let key = KeyConfig::new(actions::TIMER, config.settings());
+        let mut deck = Deck::new(key.clone());
+        deck.key(0, true);
+        deck.key(0, false);
+        let (handle, context, pressed) = deck.jobs.try_recv().unwrap();
+        apply_outcome(
+            &deck.state,
+            &deck.devices,
+            handle,
+            &context,
+            actions::run(&pressed),
+        );
+        // Read after the timer started: its deadline is at most 5 s away.
+        let start = Instant::now();
+        let mut s = lock(&deck.state);
+        assert_eq!(
+            s.timer_display(handle, &context, &key, start),
+            Some(timer::Display::Running(5))
+        );
+        let id = s.profiles[0].id.clone();
+        s.set_page(&id, 1);
+        let later = Instant::now() + Duration::from_secs(5);
+        assert_eq!(s.update_timers(later), (true, true));
+        assert_eq!(
+            s.timer_display(handle, &context, &key, later),
+            Some(timer::Display::Finished)
+        );
+        assert_eq!(s.update_timers(later), (false, false));
+    }
+
+    #[test]
+    fn an_edited_timer_cannot_ring_and_a_muted_timer_still_finishes() {
+        let config = timer::Config {
+            seconds: 1,
+            chime: true,
+        };
+        let key = KeyConfig::new(actions::TIMER, config.settings());
+        let deck = Deck::new(key.clone());
+        let mut s = lock(&deck.state);
+        let context = s.context("S1", 0).unwrap();
+        let now = Instant::now();
+        s.timers.press(1, &context, config, now).unwrap();
+        let muted = timer::Config {
+            chime: false,
+            ..config
+        };
+        let key = s.profiles[0].pages[0].keys.get_mut(&0).unwrap();
+        key.settings = muted.settings();
+        let next = now + Duration::from_secs(1);
+        // Even before the queued edit notification is processed.
+        assert_eq!(s.update_timers(next), (true, false));
+        s.prune_timers();
+        assert_eq!(s.timers.next_wake(next), None);
+        s.timers.press(1, &context, muted, next).unwrap();
+        assert_eq!(
+            s.update_timers(next + Duration::from_secs(1)),
+            (true, false)
+        );
     }
 
     #[test]

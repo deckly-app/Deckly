@@ -1383,19 +1383,23 @@ impl App {
             profile.pinned.get_or_insert_with(Page::new);
         }
         let page_id = view.page_id(profile);
-        let overlays: HashMap<u8, Overlay> = match view.shown(profile) {
-            Some(page) => {
-                let s = runtime::lock(&self.state);
-                profile
-                    .shown_keys(page)
-                    .into_iter()
-                    .filter_map(|(i, k)| {
-                        Some((i, s.overlay(&plugins::context(&k.page.id, i), k.key)?))
-                    })
-                    .collect()
+        let mut overlays: HashMap<u8, Overlay> = HashMap::new();
+        let mut timers = HashMap::new();
+        if let Some(page) = view.shown(profile) {
+            let s = runtime::lock(&self.state);
+            let now = Instant::now();
+            for (i, k) in profile.shown_keys(page) {
+                let context = plugins::context(&k.page.id, i);
+                if let Some(overlay) = s.overlay(&context, k.key) {
+                    overlays.insert(i, overlay);
+                }
+                if let Some(d) = device
+                    && let Some(display) = s.timer_display(d.handle, &context, k.key, now)
+                {
+                    timers.insert(i, display);
+                }
             }
-            None => HashMap::new(),
-        };
+        }
         // Pinned keys show, dimmed, where the canvas has no key of its own.
         let pins: BTreeMap<u8, KeyConfig> = profile
             .pinned
@@ -1486,6 +1490,10 @@ impl App {
             };
             painter.rect_filled(rect, outer_radius, border_color);
             let inner = rect.shrink(border);
+            let live = Live {
+                timer: timers.get(&index).copied(),
+                ..live
+            };
             match &config {
                 Some(key) => {
                     let tex = self.texture(
@@ -3438,6 +3446,50 @@ impl App {
                         }
                     });
                 ui.end_row();
+            }
+            actions::TIMER => {
+                let mut config = crate::timer::Config::read(s);
+                label(ui, "Duration");
+                let changed = ui
+                    .horizontal(|ui| {
+                        let (mut h, mut m, mut sec) = (
+                            config.seconds / 3600,
+                            config.seconds / 60 % 60,
+                            config.seconds % 60,
+                        );
+                        let hours = ui
+                            .add(egui::DragValue::new(&mut h).range(0..=99).suffix(" h"))
+                            .changed();
+                        let minutes = ui
+                            .add(egui::DragValue::new(&mut m).range(0..=59).suffix(" min"))
+                            .changed();
+                        let seconds = ui
+                            .add(egui::DragValue::new(&mut sec).range(0..=59).suffix(" sec"))
+                            .changed();
+                        let edited = hours || minutes || seconds;
+                        if edited {
+                            config.seconds = (h * 3600 + m * 60 + sec).max(1);
+                        }
+                        edited
+                    })
+                    .inner;
+                ui.end_row();
+                label(ui, "Sound");
+                let chime = ui
+                    .checkbox(&mut config.chime, "Play a chime when time is up")
+                    .changed();
+                ui.end_row();
+                label(ui, "On the device");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("Press to start. Press again to cancel.").weak(),
+                    )
+                    .wrap(),
+                );
+                ui.end_row();
+                if changed || chime {
+                    *s = config.settings();
+                }
             }
             actions::GO_TO_PAGE => {
                 label(ui, "Page");

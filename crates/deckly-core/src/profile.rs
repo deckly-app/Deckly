@@ -43,6 +43,7 @@ pub const RANDOM_ACTION: &str = "com.deckly.multi.random";
 pub const KEY_LOGIC: &str = "com.deckly.multi.key-logic";
 /// A pause between the actions of a Multi Action.
 pub const DELAY_ACTION: &str = "com.deckly.multi.delay";
+pub const TIMER_ACTION: &str = "com.deckly.system.timer";
 /// The actions one list of a Multi Action can hold.
 pub const MAX_GROUP_ACTIONS: usize = 100;
 
@@ -688,11 +689,12 @@ impl KeyConfig {
     }
 
     /// Whether `member` can go in this key's lists of actions. Lists hold
-    /// single actions only; Delay is for sequences, not Key Logic.
+    /// single actions only; Delay is for sequences, not Key Logic, and a
+    /// Timer needs a key of its own to show the countdown and cancel it.
     pub fn can_hold(&self, member: &str) -> bool {
         group_count(&self.action) > 0
             && group_count(member) == 0
-            && !matches!(member, FOLDER_ACTION | PARENT_FOLDER_ACTION)
+            && !matches!(member, FOLDER_ACTION | PARENT_FOLDER_ACTION | TIMER_ACTION)
             && (member != DELAY_ACTION || self.action != KEY_LOGIC)
     }
 

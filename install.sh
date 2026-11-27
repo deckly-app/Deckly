@@ -176,6 +176,12 @@ if has ldconfig && ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4.1'; then
     say "  Fedora: sudo dnf install webkit2gtk4.1"
 fi
 
+if has ldconfig && ! ldconfig -p 2>/dev/null | grep -q 'libasound.so.2'; then
+    say "note: Deckly requires the ALSA runtime library for audio output"
+    say "  Arch: sudo pacman -S alsa-lib   Debian/Ubuntu: sudo apt install libasound2t64"
+    say "  Fedora: sudo dnf install alsa-lib"
+fi
+
 case ":$PATH:" in
     *":$prefix/bin:"*) ;;
     *) say "note: $prefix/bin is not on PATH; start Deckly from the app menu" ;;

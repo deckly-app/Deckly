@@ -369,7 +369,7 @@ impl State {
         })
     }
 
-    fn key_at(&self, context: &str) -> Option<KeyConfig> {
+    pub(crate) fn key_at(&self, context: &str) -> Option<KeyConfig> {
         let (page_id, key, member) = parse_context(context)?;
         self.profiles.iter().find_map(|p| {
             let page = p.all_pages().find(|page| page.id == page_id)?;

@@ -105,7 +105,9 @@ then starts the editor. A failed build stops the launch. For an optimized
 build, use `cargo dev --release`. Plain `cargo run` and `cargo run --release`
 from the repository root use the same launcher. To install the checkout as
 your Deckly on Linux or macOS, in place of a release, run `cargo dev install`
-(see [CONTRIBUTING.md](CONTRIBUTING.md)).
+(see [CONTRIBUTING.md](CONTRIBUTING.md)). On Linux, building the app needs
+ALSA development files (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel`
+on Fedora, `alsa-lib` on Arch) for the Timer chime.
 
 Close existing Deckly instances before rebuilding, especially on Windows,
 where a running executable cannot be replaced: use Quit Deckly in the tray,
@@ -200,6 +202,12 @@ The picker has been run on Linux; Windows and macOS are compile-checked.
 The list shows the installed applications' icons, loaded in the background
 for visible rows and cached while the picker is open. Missing or unreadable
 icons use Deckly's generic application symbol.
+
+Timer (under System) shows the countdown on the key and in the editor.
+Set its duration and whether to play a chime on the default audio output.
+Press the key again to cancel. Switching pages or profiles does not stop a
+countdown; disconnecting or disabling the device does. Use Delay inside a
+Multi Action to pause the sequence instead.
 
 All built-in actions run on Linux and macOS. Open takes a file, folder, URL,
 program or `.desktop` file, or a full command with arguments, for example
